@@ -8,7 +8,7 @@ If you encounter any problems, please ask on the discord or file an issue regard
 ## Setup and compilation
 ```
 sudo apt install libx11-dev
-gcc 1.c -lX11
+gcc abs-c.c -lX11
 ```
 Run with:
 ```
