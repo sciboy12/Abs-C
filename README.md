@@ -1,7 +1,7 @@
 # Abs-C
 Abs ported to C
 
-Thanks to danil1petrov, who is the original creator of this code.
+Thanks to danil1petrov, who is the original creator of this port.
 
 If you encounter any problems, please ask on the discord or file an issue regarding it.
 
