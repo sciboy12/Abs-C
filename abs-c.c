@@ -17,20 +17,21 @@ int main()
 struct dirent **namelist;
 int i, ndevs, fd, found;
 char path[32],name[32];
-char *tpad = "Touchpad", *tpad1 = "TouchPad";
+char *tpad = "Touchpad", *tpad1 = "TouchPad", *tpad2 = "Synaptics";
 ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
 
 for (i = 0; i < ndevs; i++) {
     snprintf(path, sizeof path, "%s%s", "/dev/input/", namelist[i]->d_name);
     fd = open(path, O_RDONLY);
     ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-    if (strstr(name,tpad) != NULL | strstr(name,tpad1) != NULL){found = 1; break;}
+    if (strstr(name,tpad) != NULL | strstr(name,tpad1) != NULL | strstr(name,tpad2) != NULL){found = 1; break;}
     }
     if (found != 1){printf("Touchpad not found\n"); exit(0);};
 
 struct input_event ev;
 int tmin_x,tmax_x,tmin_y,tmax_y,x,y,x_old,y_old,int_y,int_x;
-// Min and max touchpad values
+
+// Get min and max touchpad values
 int abs[1];
 ioctl(fd, EVIOCGABS(ABS_X), abs);
 tmin_x = abs[1];
@@ -38,6 +39,7 @@ tmax_x = abs[2];
 ioctl(fd, EVIOCGABS(ABS_Y), abs);
 tmin_y = abs[1];
 tmax_y = abs[2];
+
 // Display resolution
 Display *disp;
 Screen *scr;
@@ -45,15 +47,43 @@ Window root_window;
 disp = XOpenDisplay(0);
 root_window = XRootWindow(disp, 0);
 scr = ScreenOfDisplay(disp, 0);
-// Aspect ratio
-float sx, sy, tx, newty;
-tx = tmax_x;
+float sx, sy, xo, yo, sr;
+float newty, newtx;
+
+// Get screen resolution
 sx=scr->width;
 sy=scr->height;
-newty=(sy / sx) * tx;
-tmax_y=(int)newty;
+
+// Calculate screen ratio
+sr = sy / sx;
+
+// Calculate X and Y offset
+// X Offset is untested, and therefore temporarily disabled
+//xo = tmax_x * sr / 4;
+yo = tmax_y * sr / 4;
+
+// Halve xo and yo for the next step
+// xo = xo / 2;
+yo = yo / 2;
+
+// Compensate for display/touchpad ratio difference
+tmax_y=(sy / sx) * tmax_x;
+
+// Center the active area
+//tmin_x = tmin_x + xo;
+//tmax_x = tmax_x + xo;
+tmin_y = tmin_y + yo;
+tmax_y = tmax_y + yo;
+
+// Compensate for display/touchpad ratio difference
+//tmax_y=(sy / sx) * tmax_x;
+tmax_y=(int)tmax_y;
+//tmax_y=(int)newty;
+
 // Grab device
+// Comment this out to enable your touchpad's gestures/buttons
 ioctl(fd, EVIOCGRAB);
+
 printf("Press Ctrl-C to quit\n");
 while(1)
 {
