@@ -11,12 +11,14 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
-int main()
-{
+
+//using namespace std; 
+
+int main() {
 // Detect touchpad
 struct dirent **namelist;
 int i, ndevs, fd, found;
-char path[32],name[32];
+char path[64],name[64];
 char *tpad = "Touchpad", *tpad1 = "TouchPad", *tpad2 = "Synaptics";
 ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
 
@@ -47,46 +49,45 @@ Window root_window;
 disp = XOpenDisplay(0);
 root_window = XRootWindow(disp, 0);
 scr = ScreenOfDisplay(disp, 0);
-float sx, sy, xo, yo, sr;
-float newty, newtx;
+double sr, tr, xo, yo;
+int sx, sy, newty, newtx;
 
 // Get screen resolution
 sx=scr->width;
 sy=scr->height;
 
 // Calculate screen ratio
-sr = sy / sx;
+sr = (float)sx / (float)sy;
 
-// Calculate X and Y offset
-// X Offset is untested, and therefore temporarily disabled
-//xo = tmax_x * sr / 4;
-yo = tmax_y * sr / 4;
+// Calculate touchpad ratio
+tr = (float)tmax_x / (float)tmax_y;
 
-// Halve xo and yo for the next step
-// xo = xo / 2;
-yo = yo / 2;
+// Compensate for display/touchpad ratio difference and center the active area
+if (sr < tr) {
 
-// Compensate for display/touchpad ratio difference
-tmax_y=(sy / sx) * tmax_x;
+// Calculate X offset
+xo = tmax_x * sr / 16;
 
-// Center the active area
-//tmin_x = tmin_x + xo;
-//tmax_x = tmax_x + xo;
+// Apply Offset
+tmin_x = tmin_x + xo;
+tmax_x = tmax_x - xo;
+}
+
+else {
+//Calculate Y offset
+yo = tmax_y * sr / 16;
+
+//Apply Offset
 tmin_y = tmin_y + yo;
-tmax_y = tmax_y + yo;
-
-// Compensate for display/touchpad ratio difference
-//tmax_y=(sy / sx) * tmax_x;
-tmax_y=(int)tmax_y;
-//tmax_y=(int)newty;
+tmax_y = tmax_y - yo;
+}
 
 // Grab device
 // Comment this out to enable your touchpad's gestures/buttons
 ioctl(fd, EVIOCGRAB);
 
 printf("Press Ctrl-C to quit\n");
-while(1)
-{
+while(1) {
     read(fd,&ev, sizeof(ev));
     if( ev.code == 0 & ev.value != 0 ) { x = ev.value; }
     if( ev.code == 1 ) { y = ev.value; }
