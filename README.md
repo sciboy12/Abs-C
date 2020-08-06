@@ -1,16 +1,17 @@
 # Abs-C
-Abs ported to C
+[Abs](https://github.com/sciboy12/Abs) ported to C
 
-Thanks to danil1petrov, who is the original creator of this port.
+Thanks to [danil1petrov](https://github.com/danil1petrov), who is the original creator of this port.
 
-If you encounter any problems, please ask on the discord or file an issue regarding it.
+If you encounter any problems, please ask on the [Discord](https://discord.gg/vKJfPyU) or file an issue regarding it.
 
 ## Setup and compilation
 ```
 sudo apt install libx11-dev
-gcc abs-c.c -lX11
+cd (Wherever you saved Abs-C to)
+make
 ```
 Run with:
 ```
-sudo ./a.out
+sudo ./abs-c
 ```
