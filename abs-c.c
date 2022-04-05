@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <linux/input.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -55,7 +56,6 @@ int main() {
     // Get screen resolution
     int sx = scr->width;
     int sy = scr->height;
-    int newty, newtx;
 
     // Calculate screen ratio
     sr = (float)sx / (float)sy;
@@ -71,8 +71,8 @@ int main() {
         xo = tmax_x * sr / 16;
 
         // Apply Offset
-        tmin_x = tmin_x + xo;
-        tmax_x = tmax_x - xo;
+        //tmin_x = tmin_x + xo;
+        //tmax_x = tmax_x - xo;
     }
 
     else {
@@ -80,13 +80,16 @@ int main() {
         yo = tmax_y * sr / 16;
 
         //Apply Offset
-        tmin_y = tmin_y + yo;
-        tmax_y = tmax_y - yo;
+        //tmin_y = tmin_y + yo;
+        //tmax_y = tmax_y - yo;
     }
 
     // Grab device
     // Uncomment this to disable your touchpad's gestures/buttons
     //ioctl(fd, EVIOCGRAB);
+
+    // Init update indicator
+    bool update = false;
 
     printf("Press Ctrl-C to quit\n");
     while(1) {
@@ -99,16 +102,34 @@ int main() {
         if(ev.code == ABS_Y) {y = ev.value;}
 
         // Only set position if value has changed
-        if(x != x_old & x > 1 | y != y_old & x > 1) {
+        // Secord param is to fix cursor flickering to left edge
+        if(x != x_old & x > 1) {
             
             // Map input to screen (Similar to Python's numpy.interp)
             int_x = ( x - tmin_x ) * scr->width / ( tmax_x - tmin_x );
-            int_y = ( y - tmin_y ) * scr->height / ( tmax_y - tmin_y );
-            // Send input and flush X input buffer
+            update = true;
 
+        }
+
+        // Only set position if value has changed
+        if(y != y_old) {
+
+            // Map input to screen (Similar to Python's numpy.interp)
+            int_y = ( y - tmin_y ) * scr->height / ( tmax_y - tmin_y );
+            update = true;
+        }
+
+        // Only update values if needed
+        if (update == true) {
+
+            // Send input and flush X input buffer
             XWarpPointer(disp, None, root_window, 0, 0, 0, 0, int_x, int_y);
             XFlush(disp);
+            
+            // Reset update indicator
+            update = false;
         }
+
             
         // Set old vars (for next iteration of this loop)
         x_old = x;
