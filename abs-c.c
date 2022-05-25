@@ -1,6 +1,5 @@
 #include <stdio.h>
-#include <stdint.h>
-#include <linux/input.h>
+#include <linux/uinput.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <dirent.h>
@@ -8,12 +7,75 @@
 #include <unistd.h>
 #include <signal.h>
 #include <string.h>
-#include <X11/X.h>
 #include <X11/Xlib.h>
-#include <X11/Xutil.h>
+
+// WIP
+int quit() {
+    //extern int tab_fd;
+    //ioctl(tab_fd, UI_DEV_DESTROY);
+    exit(0);
+    }
+
+int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
+    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    if(fd < 0) {
+        printf("Failed to access /dev/uinput\n");
+        exit(EXIT_FAILURE);
+    }
+
+    #define EV_KEY          0x01
+    #define EV_REL          0x02
+    #define EV_ABS          0x03
+
+    ioctl(fd, UI_SET_EVBIT, EV_KEY);
+    ioctl(fd, UI_SET_EVBIT, EV_SYN);
+
+    ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
+    //ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
+
+    ioctl(fd, UI_SET_EVBIT, EV_ABS);
+    ioctl(fd, UI_SET_ABSBIT, ABS_X);
+    ioctl(fd, UI_SET_ABSBIT, ABS_Y);
+    //ioctl(fd, UI_SET_KEYBIT, ABS_PRESSURE);
+
+
+    #define UINPUT_MAX_NAME_SIZE    80
+
+    struct uinput_user_dev {
+        char name[UINPUT_MAX_NAME_SIZE];
+        struct input_id id;
+            int ff_effects_max;
+            int absmax[ABS_MAX + 1];
+            int absmin[ABS_MAX + 1];
+            int absfuzz[ABS_MAX + 1];
+            int absflat[ABS_MAX + 1];
+    };
+
+    struct uinput_user_dev uidev;
+
+    memset(&uidev, 0, sizeof(uidev));
+
+    snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "Abs-C Virtual Tablet");
+    uidev.id.bustype = BUS_USB;
+    uidev.id.vendor  = 0x1234;
+    uidev.id.product = 0xfedc;
+    uidev.id.version = 1;
+    uidev.absmin[ABS_X] = tmin_x;
+    uidev.absmax[ABS_X] = tmax_x + 1;
+    uidev.absmin[ABS_Y] = tmin_y;
+    uidev.absmax[ABS_Y] = tmax_y;
+
+    write(fd, &uidev, sizeof(uidev));
+    ioctl(fd, UI_DEV_CREATE);
+
+    return fd;
+}
+
 
 int main() {
-
+    // WIP
+    //signal(SIGTERM, quit);
+    
     // Detect touchpad
     struct dirent **namelist;
     int i, ndevs, fd, found;
@@ -47,6 +109,7 @@ int main() {
     Display *disp;
     Screen *scr;
     Window root_window;
+    
     // Open display and get screen    
     disp = XOpenDisplay(0);
     root_window = XRootWindow(disp, 0);
@@ -71,8 +134,8 @@ int main() {
         xo = tmax_x * sr / 16;
 
         // Apply Offset
-        //tmin_x = tmin_x + xo;
-        //tmax_x = tmax_x - xo;
+        tmin_x = tmin_x + xo;
+        tmax_x = tmax_x - xo;
     }
 
     else {
@@ -80,22 +143,29 @@ int main() {
         yo = tmax_y * sr / 16;
 
         //Apply Offset
-        //tmin_y = tmin_y + yo;
-        //tmax_y = tmax_y - yo;
+        tmin_y = tmin_y + yo;
+        tmax_y = tmax_y - yo;
     }
 
     // Grab device
-    // Uncomment this to disable your touchpad's gestures/buttons
-    //ioctl(fd, EVIOCGRAB);
+    // Comment this out to disable your touchpad's gestures/buttons
+    ioctl(fd, EVIOCGRAB);
 
     // Init update indicator
     bool update = false;
 
     printf("Press Ctrl-C to quit\n");
-    while(1) {
+    
+    int tab_fd = init_uinput(tmin_x, tmax_x, tmin_y, tmax_y);
 
+    struct input_event tab_ev[2];
+    memset(tab_ev, 0, sizeof(tab_ev));
+    
+    while(1) {
+        
         // Read event from touchpad
         read(fd,&ev, sizeof(ev));
+        
 
         // Set values according to event codes
         if(ev.code == ABS_X) {x = ev.value;}
@@ -104,34 +174,43 @@ int main() {
         // Only set position if value has changed
         // Secord param is to fix cursor flickering to left edge
         if(x != x_old & x > 1) {
-            
-            // Map input to screen (Similar to Python's numpy.interp)
-            int_x = ( x - tmin_x ) * scr->width / ( tmax_x - tmin_x );
+            int_x = x;
             update = true;
-
         }
 
         // Only set position if value has changed
         if(y != y_old) {
-
-            // Map input to screen (Similar to Python's numpy.interp)
-            int_y = ( y - tmin_y ) * scr->height / ( tmax_y - tmin_y );
+            int_y = y;
             update = true;
         }
 
         // Only update values if needed
         if (update == true) {
 
-            // Send input and flush X input buffer
-            XWarpPointer(disp, None, root_window, 0, 0, 0, 0, int_x, int_y);
-            XFlush(disp);
+            // Send uinput event to virtual device
+            tab_ev[0].type = EV_ABS;
+            tab_ev[0].code = ABS_X;
+            tab_ev[0].value = int_x;
+            tab_ev[1].type = EV_ABS;
+            tab_ev[1].code = ABS_Y;
+            tab_ev[1].value = int_y;
+
+            write(tab_fd, tab_ev, sizeof(tab_ev));
+
+
+            // Sync
+            tab_ev[0].type = EV_SYN;
+            tab_ev[0].code = 0;
+            tab_ev[0].value = 0;
             
+            write(tab_fd, tab_ev, sizeof(tab_ev));
+
             // Reset update indicator
             update = false;
         }
 
             
-        // Set old vars (for next iteration of this loop)
+        // Set old vars (for next iteration of the loop)
         x_old = x;
         y_old = y;
     }
