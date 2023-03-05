@@ -11,6 +11,12 @@ sudo apt install libx11-dev
 cd (Wherever you saved Abs-C to)
 make
 ```
+
+
+## Usage
+
+If playing on osu!Lazer, disable High Precision Mouse and Fullscreen within Lazer's settings.
+
 Run with:
 ```
 sudo ./abs-c
