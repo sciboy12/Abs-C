@@ -26,6 +26,7 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     #define EV_KEY          0x01
     #define EV_REL          0x02
     #define EV_ABS          0x03
+    #define UI_SET_PROPBIT    _IOW(UINPUT_IOCTL_BASE, 110, int)
 
     ioctl(fd, UI_SET_EVBIT, EV_KEY);
     ioctl(fd, UI_SET_EVBIT, EV_SYN);
@@ -37,7 +38,7 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
     //ioctl(fd, UI_SET_KEYBIT, ABS_PRESSURE);
-
+    //ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
     #define UINPUT_MAX_NAME_SIZE    80
 
@@ -148,8 +149,8 @@ int main() {
     }
 
     // Grab device
-    // Comment this out to disable your touchpad's gestures/buttons
-    ioctl(fd, EVIOCGRAB);
+    // Comment this out to enable your touchpad's gestures/buttons
+    ioctl(fd, EVIOCGRAB, 1);
 
     // Init update indicator
     bool update = false;
@@ -164,8 +165,7 @@ int main() {
     while(1) {
         
         // Read event from touchpad
-        read(fd,&ev, sizeof(ev));
-        
+        read(fd,&ev, sizeof(ev));        
 
         // Set values according to event codes
         if(ev.code == ABS_X) {x = ev.value;}
@@ -191,24 +191,25 @@ int main() {
             tab_ev[0].type = EV_ABS;
             tab_ev[0].code = ABS_X;
             tab_ev[0].value = int_x;
+            write(tab_fd, tab_ev, sizeof(tab_ev));
+
             tab_ev[1].type = EV_ABS;
             tab_ev[1].code = ABS_Y;
             tab_ev[1].value = int_y;
-
             write(tab_fd, tab_ev, sizeof(tab_ev));
-
 
             // Sync
             tab_ev[0].type = EV_SYN;
-            tab_ev[0].code = 0;
+            tab_ev[0].code = SYN_REPORT;
             tab_ev[0].value = 0;
-            
-            write(tab_fd, tab_ev, sizeof(tab_ev));
+            tab_ev[1].type = EV_SYN;
+            tab_ev[1].code = SYN_REPORT;
+            tab_ev[1].value = 0;
+            //write(tab_fd, tab_ev, sizeof(tab_ev));
 
             // Reset update indicator
             update = false;
         }
-
             
         // Set old vars (for next iteration of the loop)
         x_old = x;
