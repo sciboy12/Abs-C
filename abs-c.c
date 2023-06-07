@@ -149,7 +149,7 @@ int main() {
     }
 
     // Grab device
-    // Comment this out to enable your touchpad's gestures/buttons
+    // Comment this out to disable your touchpad's gestures/buttons
     ioctl(fd, EVIOCGRAB, 1);
 
     // Init update indicator
@@ -165,7 +165,8 @@ int main() {
     while(1) {
         
         // Read event from touchpad
-        read(fd,&ev, sizeof(ev));        
+        read(fd,&ev, sizeof(ev));
+        
 
         // Set values according to event codes
         if(ev.code == ABS_X) {x = ev.value;}
