@@ -1,8 +1,8 @@
 CC = gcc
-LDFLAGS = -lX11
+LDFLAGS = -lX11 -linih
 TARGET = abs-c
 
-all: $(TARGET)
+all: $(TARGET) 
 	$(CC) -o $(TARGET) $(TARGET).c $(LDFLAGS)
 clean:
 	$(RM) $(TARGET)

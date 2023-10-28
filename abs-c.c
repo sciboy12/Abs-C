@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <string.h>
 #include <X11/Xlib.h>
+#include <ini.h>
 
 // WIP
 int quit() {
@@ -15,6 +16,35 @@ int quit() {
     //ioctl(tab_fd, UI_DEV_DESTROY);
     exit(0);
     }
+
+typedef struct
+{
+    int version;
+    int x_scale_pct_min;
+    int x_scale_pct_max;
+    int y_scale_pct_min;
+    int y_scale_pct_max;
+} configuration;
+
+static int handler(void* user, const char* section, const char* name,
+                   const char* value)
+{
+    configuration* pconfig = (configuration*)user;
+
+    #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
+    if (MATCH("area", "x_scale_pct_min")) {
+        pconfig->x_scale_pct_min = atoi(value);
+    } else if (MATCH("area", "x_scale_pct_max")) {
+        pconfig->x_scale_pct_max = atoi(value);
+    } else if (MATCH("area", "y_scale_pct_min")) {
+        pconfig->y_scale_pct_min = atoi(value);
+    } else if (MATCH("area", "y_scale_pct_max")) {
+        pconfig->y_scale_pct_max = atoi(value);
+    } else {
+        return 0;  /* unknown section/name, error */
+    }
+    return 1;
+}
 
 int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
@@ -127,6 +157,35 @@ int main() {
     // Calculate touchpad ratio
     tr = (float)tmax_x / (float)tmax_y;
 
+    int x_scale_pct_min;
+    int x_scale_pct_max;
+    int y_scale_pct_min;
+    int y_scale_pct_max;
+
+    configuration config;
+
+    // Get user config dir
+    char config_path[50];
+    strcpy(config_path, getenv("HOME"));
+    strcat(config_path, "/.config/abs-c.ini");
+
+    // Try to load config from $HOME/.config/
+    if (ini_parse(config_path, handler, &config) < 0) {
+        // Use defaults if above fails
+        x_scale_pct_min = 100; // Left edge
+        x_scale_pct_max = 100; // Right edge
+        y_scale_pct_min = 100; // Top edge
+        y_scale_pct_max = 100; // Bottom edge
+    }
+
+    // Set variables to config file contents
+    else {
+        x_scale_pct_min = config.x_scale_pct_min;
+        x_scale_pct_max = config.x_scale_pct_max;
+        y_scale_pct_min = config.y_scale_pct_min;
+        y_scale_pct_max = config.y_scale_pct_max;
+    }
+  
     // Compensate for screen/touchpad ratio difference and center the active area
     // This is to ensure there is no stretching of the area
     if (sr < tr) {
@@ -148,9 +207,25 @@ int main() {
         tmax_y = tmax_y - yo;
     }
 
+    // Apply custom area
+    //int x_scale_pct_min = 115; // Left edge
+    //int x_scale_pct_max = 115; // Right edge
+    //int y_scale_pct_min = 115; // Top edge
+    //int y_scale_pct_max = 115; // Bottom edge
+
+    float x_scale_min = (0 - x_scale_pct_min + 100) * 0.01;
+    float x_scale_max = x_scale_pct_max * 0.01;
+    float y_scale_min = (0 - y_scale_pct_min + 100) * 0.01;
+    float y_scale_max = y_scale_pct_max * 0.01;
+
+    tmin_x = tmin_x * 0.5 + tmax_x * x_scale_min;
+    tmax_x = tmax_x * x_scale_max;
+
+    tmin_y = tmin_y * 0.5 + tmax_y * y_scale_min;
+    tmax_y = tmax_y * y_scale_max;
     // Grab device
-    // Comment this out to disable your touchpad's gestures/buttons
-    ioctl(fd, EVIOCGRAB, 1);
+    // Comment this out to enable your touchpad's gestures/buttons
+    //ioctl(fd, EVIOCGRAB, 1);
 
     // Init update indicator
     bool update = false;
@@ -161,48 +236,48 @@ int main() {
 
     struct input_event tab_ev[2];
     memset(tab_ev, 0, sizeof(tab_ev));
-    
+
     while(1) {
         
         // Read event from touchpad
-        read(fd,&ev, sizeof(ev));
-        
+        read(fd,&ev, sizeof(ev));        
 
         // Set values according to event codes
         if(ev.code == ABS_X) {x = ev.value;}
         if(ev.code == ABS_Y) {y = ev.value;}
 
-        // Only set position if value has changed
-        // Secord param is to fix cursor flickering to left edge
-        if(x != x_old & x > 1) {
-            int_x = x;
-            update = true;
-        }
-
-        // Only set position if value has changed
-        if(y != y_old) {
-            int_y = y;
-            update = true;
-        }
-
-        // Only update values if needed
-        if (update == true) {
-
-            // Send uinput event to virtual device
+        // Only update position if value has changed
+        if(x != y_old) {
+            //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[0].type = EV_ABS;
-            tab_ev[0].code = ABS_X;
-            tab_ev[0].value = int_x;
+            tab_ev[0].code = ABS_Y;
+            tab_ev[0].value = y;
             write(tab_fd, tab_ev, sizeof(tab_ev));
 
+            update = true;
+        }
+
+        // Only update position if value has changed
+        // "x > 0" is used to prevent cursor from flickering to left edge
+        if(x != x_old && x > 0) {
+            //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[1].type = EV_ABS;
-            tab_ev[1].code = ABS_Y;
-            tab_ev[1].value = int_y;
+            tab_ev[1].code = ABS_X;
+            tab_ev[1].value = x;
             write(tab_fd, tab_ev, sizeof(tab_ev));
 
-            // Sync
+            update = true;
+        }
+
+        // Only sync if needed
+        if (update == true) {
+            //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[0].type = EV_SYN;
             tab_ev[0].code = SYN_REPORT;
             tab_ev[0].value = 0;
+            //write(tab_fd, tab_ev, sizeof(tab_ev));
+
+            //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[1].type = EV_SYN;
             tab_ev[1].code = SYN_REPORT;
             tab_ev[1].value = 0;
