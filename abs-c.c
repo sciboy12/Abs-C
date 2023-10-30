@@ -24,6 +24,9 @@ typedef struct
     int x_scale_pct_max;
     int y_scale_pct_min;
     int y_scale_pct_max;
+    int keep_ratio;
+    int use_pen;
+
 } configuration;
 
 static int handler(void* user, const char* section, const char* name,
@@ -40,6 +43,10 @@ static int handler(void* user, const char* section, const char* name,
         pconfig->y_scale_pct_min = atoi(value);
     } else if (MATCH("area", "y_scale_pct_max")) {
         pconfig->y_scale_pct_max = atoi(value);
+    } else if (MATCH("area", "keep_ratio")) {
+        pconfig->keep_ratio = atoi(value);
+    } else if (MATCH("area", "use_pen")) {
+        pconfig->use_pen = atoi(value);
     } else {
         return 0;  /* unknown section/name, error */
     }
@@ -106,23 +113,81 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
 int main() {
     // WIP
     //signal(SIGTERM, quit);
+
+    int x_scale_pct_min;
+    int x_scale_pct_max;
+    int y_scale_pct_min;
+    int y_scale_pct_max;
+    int keep_ratio;
+    int use_pen;
+
+    configuration config;
+
+    // Get user config dir
+    char config_path[50];
+    strcpy(config_path, getenv("HOME"));
+    strcat(config_path, "/.config/abs-c.ini");
+
+    // Try to load config from $HOME/.config/
+    if (ini_parse(config_path, handler, &config) < 0) {
+        // Use defaults if above fails
+        x_scale_pct_min = 100; // Left edge
+        x_scale_pct_max = 100; // Right edge
+        y_scale_pct_min = 100; // Top edge
+        y_scale_pct_max = 100; // Bottom edge
+        keep_ratio = 1;
+        use_pen = 0;
+    }
+
+    // Set variables to config file contents
+    else {
+        x_scale_pct_min = config.x_scale_pct_min;
+        x_scale_pct_max = config.x_scale_pct_max;
+        y_scale_pct_min = config.y_scale_pct_min;
+        y_scale_pct_max = config.y_scale_pct_max;
+        keep_ratio = config.keep_ratio;
+        use_pen = config.use_pen;
+    }
+
     
     // Detect touchpad
     struct dirent **namelist;
     int i, ndevs, fd, found;
     char path[64],name[64];
-    char *tpad = "Touchpad", *tpad1 = "TouchPad", *tpad2 = "Synaptics";
+    char *pen;
+    char *tpad1;
+    char *tpad2;
+    char *tpad3;
+
+    if (use_pen == 1) {
+        pen = "Pen";
+    }
+    else {
+        tpad1 = "Touchpad";
+        tpad2 = "TouchPad";
+        tpad3 = "Synaptics";
+        
+    }
     ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
 
     for (i = 0; i < ndevs; i++) {
         snprintf(path, sizeof path, "%s%s", "/dev/input/", namelist[i]->d_name);
         fd = open(path, O_RDONLY);
         ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-        if (strstr(name,tpad) != NULL | strstr(name,tpad1) != NULL | strstr(name,tpad2) != NULL){found = 1; break;}
+
+        if (use_pen == 1) {
+            if (strstr(name,pen) != NULL){found = 1; break;}
+        }
+
+        // Check for fuzzy match
+        else if (found != 1 &
+            strstr(name,tpad1) != NULL |
+            strstr(name,tpad2) != NULL |
+            strstr(name,tpad3) != NULL){found = 1; break;}
     }
 
     // Exit if no touchpad is detected
-    if (found != 1){printf("Touchpad not found, exiting...\n"); exit(0);};
+    if (found != 1){printf("Device not found, exiting...\n"); exit(0);};
 
     struct input_event ev;
     int tmin_x,tmax_x,tmin_y,tmax_y,x,y,x_old,y_old,int_y,int_x;
@@ -157,62 +222,30 @@ int main() {
     // Calculate touchpad ratio
     tr = (float)tmax_x / (float)tmax_y;
 
-    int x_scale_pct_min;
-    int x_scale_pct_max;
-    int y_scale_pct_min;
-    int y_scale_pct_max;
-
-    configuration config;
-
-    // Get user config dir
-    char config_path[50];
-    strcpy(config_path, getenv("HOME"));
-    strcat(config_path, "/.config/abs-c.ini");
-
-    // Try to load config from $HOME/.config/
-    if (ini_parse(config_path, handler, &config) < 0) {
-        // Use defaults if above fails
-        x_scale_pct_min = 100; // Left edge
-        x_scale_pct_max = 100; // Right edge
-        y_scale_pct_min = 100; // Top edge
-        y_scale_pct_max = 100; // Bottom edge
-    }
-
-    // Set variables to config file contents
-    else {
-        x_scale_pct_min = config.x_scale_pct_min;
-        x_scale_pct_max = config.x_scale_pct_max;
-        y_scale_pct_min = config.y_scale_pct_min;
-        y_scale_pct_max = config.y_scale_pct_max;
-    }
-  
     // Compensate for screen/touchpad ratio difference and center the active area
     // This is to ensure there is no stretching of the area
-    if (sr < tr) {
+    // Equivalent to "Keep aspect ratio" on monitors
+    if (keep_ratio == 1) {
+        if (sr < tr) {
 
-        // Calculate X offset
-        xo = tmax_x * sr / 16;
+            // Calculate X offset
+            xo = tmax_x * sr / 16;
 
-        // Apply Offset
-        tmin_x = tmin_x + xo;
-        tmax_x = tmax_x - xo;
+            // Apply Offset
+            tmin_x = tmin_x + xo;
+            tmax_x = tmax_x - xo;
+        }
+
+        else {
+            //Calculate Y offset
+            yo = tmax_y * sr / 16;
+
+            //Apply Offset
+            tmin_y = tmin_y + yo;
+            tmax_y = tmax_y - yo;
+        }
     }
-
-    else {
-        //Calculate Y offset
-        yo = tmax_y * sr / 16;
-
-        //Apply Offset
-        tmin_y = tmin_y + yo;
-        tmax_y = tmax_y - yo;
-    }
-
     // Apply custom area
-    //int x_scale_pct_min = 115; // Left edge
-    //int x_scale_pct_max = 115; // Right edge
-    //int y_scale_pct_min = 115; // Top edge
-    //int y_scale_pct_max = 115; // Bottom edge
-
     float x_scale_min = (0 - x_scale_pct_min + 100) * 0.01;
     float x_scale_max = x_scale_pct_max * 0.01;
     float y_scale_min = (0 - y_scale_pct_min + 100) * 0.01;
@@ -223,9 +256,10 @@ int main() {
 
     tmin_y = tmin_y * 0.5 + tmax_y * y_scale_min;
     tmax_y = tmax_y * y_scale_max;
+
     // Grab device
     // Comment this out to enable your touchpad's gestures/buttons
-    //ioctl(fd, EVIOCGRAB, 1);
+    ioctl(fd, EVIOCGRAB, 1);
 
     // Init update indicator
     bool update = false;
@@ -247,7 +281,7 @@ int main() {
         if(ev.code == ABS_Y) {y = ev.value;}
 
         // Only update position if value has changed
-        if(x != y_old) {
+        if(x != y_old && y > 0) {
             //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[0].type = EV_ABS;
             tab_ev[0].code = ABS_Y;
@@ -259,7 +293,7 @@ int main() {
 
         // Only update position if value has changed
         // "x > 0" is used to prevent cursor from flickering to left edge
-        if(x != x_old && x > 0) {
+        if(y != x_old && x > 0) {
             //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[1].type = EV_ABS;
             tab_ev[1].code = ABS_X;
