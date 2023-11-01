@@ -11,7 +11,28 @@ sudo apt install libx11-dev
 cd (Wherever you saved Abs-C to)
 make
 ```
+## Configuration
 
+Place abs-c.ini into ~/.config/
+
+### Config options
+
+#### Custom Area
+These values are relative to the center of the touchpad/screen and are measured in percent:
+
+`x_scale_pct_min`: Left edge
+
+`x_scale_pct_max`: Right Edge
+
+`y_scale_pct_min`: Top edge
+
+`y_scale_pct_max`: Bottom edge
+
+
+#### Other options
+`keep_ratio`: Enable/Disable Ratio Compensation (Similar to "Keep aspect ratio" on monitors)
+
+`use_pen`: Use an active stylus on a compatible touchscreen tablet, instead of the touchpad
 
 ## Usage
 
