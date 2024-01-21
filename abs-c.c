@@ -20,10 +20,10 @@ int quit() {
 typedef struct
 {
     int version;
-    int x_scale_pct_min;
-    int x_scale_pct_max;
-    int y_scale_pct_min;
-    int y_scale_pct_max;
+    float x_scale_pct_min;
+    float x_scale_pct_max;
+    float y_scale_pct_min;
+    float y_scale_pct_max;
     int keep_ratio;
     int use_pen;
 
@@ -114,10 +114,10 @@ int main() {
     // WIP
     //signal(SIGTERM, quit);
 
-    int x_scale_pct_min;
-    int x_scale_pct_max;
-    int y_scale_pct_min;
-    int y_scale_pct_max;
+    float x_scale_pct_min;
+    float x_scale_pct_max;
+    float y_scale_pct_min;
+    float y_scale_pct_max;
     int keep_ratio;
     int use_pen;
 
@@ -251,10 +251,10 @@ int main() {
     float y_scale_min = (0 - y_scale_pct_min + 100) * 0.01;
     float y_scale_max = y_scale_pct_max * 0.01;
 
-    tmin_x = tmin_x * 0.5 + tmax_x * x_scale_min;
+    tmin_x = tmin_x * 0.5 + tmin_x * x_scale_min;
     tmax_x = tmax_x * x_scale_max;
 
-    tmin_y = tmin_y * 0.5 + tmax_y * y_scale_min;
+    tmin_y = tmin_y * 0.5 + tmin_y * y_scale_min;
     tmax_y = tmax_y * y_scale_max;
 
     // Grab device
