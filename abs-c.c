@@ -245,17 +245,17 @@ int main() {
             tmax_y = tmax_y - yo;
         }
     }
+
     // Apply custom area
-    float x_scale_min = (0 - x_scale_pct_min + 100) * 0.01;
+    float x_scale_min = x_scale_pct_min * 0.01;
     float x_scale_max = x_scale_pct_max * 0.01;
-    float y_scale_min = (0 - y_scale_pct_min + 100) * 0.01;
+    float y_scale_min = y_scale_pct_min * 0.01;
     float y_scale_max = y_scale_pct_max * 0.01;
 
-    tmin_x = tmin_x * 0.5 + tmin_x * x_scale_min;
-    tmax_x = tmax_x * x_scale_max;
-
-    tmin_y = tmin_y * 0.5 + tmin_y * y_scale_min;
-    tmax_y = tmax_y * y_scale_max;
+    int new_tmin_x = tmax_x - (x_scale_min * (tmax_x - tmin_x));
+    int new_tmax_x = tmin_x + (x_scale_max * (tmax_x - tmin_x));
+    int new_tmin_y = tmax_y - (y_scale_min * (tmax_y - tmin_y));
+    int new_tmax_y = tmin_y + (y_scale_max * (tmax_y - tmin_y));
 
     // Grab device
     // Comment this out to enable your touchpad's gestures/buttons
@@ -266,7 +266,7 @@ int main() {
 
     printf("Press Ctrl-C to quit\n");
     
-    int tab_fd = init_uinput(tmin_x, tmax_x, tmin_y, tmax_y);
+    int tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
 
     struct input_event tab_ev[2];
     memset(tab_ev, 0, sizeof(tab_ev));
