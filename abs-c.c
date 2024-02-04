@@ -166,26 +166,30 @@ int main() {
         tpad1 = "Touchpad";
         tpad2 = "TouchPad";
         tpad3 = "Synaptics";
-        
     }
-    ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
 
+    ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
+    bool is_mouse;
     for (i = 0; i < ndevs; i++) {
         snprintf(path, sizeof path, "%s%s", "/dev/input/", namelist[i]->d_name);
         fd = open(path, O_RDONLY);
         ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-
-        if (use_pen == 1) {
-            if (strstr(name,pen) != NULL){found = 1; break;}
+        if(strstr(name, "Mouse") != NULL) {
+            is_mouse = true;
         }
+        if(is_mouse != true) {
+            if (use_pen == 1) {
+                if (strstr(name,pen) != NULL){found = 1; break;}
+            }
 
-        // Check for fuzzy match
-        else if (found != 1 &
-            strstr(name,tpad1) != NULL |
-            strstr(name,tpad2) != NULL |
-            strstr(name,tpad3) != NULL){found = 1; break;}
-    }
-
+            // Check for fuzzy match
+            else if (found != 1 &
+                strstr(name,tpad1) != NULL |
+                strstr(name,tpad2) != NULL |
+                strstr(name,tpad3) != NULL){found = 1; break;}
+            }
+        is_mouse = false;
+        }
     // Exit if no touchpad is detected
     if (found != 1){printf("Device not found, exiting...\n"); exit(0);};
 
