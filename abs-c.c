@@ -7,7 +7,6 @@
 #include <unistd.h>
 #include <signal.h>
 #include <string.h>
-#include <X11/Xlib.h>
 #include <ini.h>
 
 // WIP
@@ -20,6 +19,8 @@ int quit() {
 typedef struct
 {
     int version;
+    int display_width;
+    int display_height;
     float x_scale_pct_min;
     float x_scale_pct_max;
     float y_scale_pct_min;
@@ -35,7 +36,11 @@ static int handler(void* user, const char* section, const char* name,
     configuration* pconfig = (configuration*)user;
 
     #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
-    if (MATCH("area", "x_scale_pct_min")) {
+    if (MATCH("display", "width")) {
+        pconfig->display_width = atoi(value);
+    } else if (MATCH("display", "height")) {
+        pconfig->display_height = atoi(value);
+    } else if (MATCH("area", "x_scale_pct_min")) {
         pconfig->x_scale_pct_min = atoi(value);
     } else if (MATCH("area", "x_scale_pct_max")) {
         pconfig->x_scale_pct_max = atoi(value);
@@ -114,6 +119,8 @@ int main() {
     // WIP
     //signal(SIGTERM, quit);
 
+    int display_width;
+    int display_height;
     float x_scale_pct_min;
     float x_scale_pct_max;
     float y_scale_pct_min;
@@ -131,6 +138,8 @@ int main() {
     // Try to load config from $HOME/.config/
     if (ini_parse(config_path, handler, &config) < 0) {
         // Use defaults if above fails
+        display_width = 1366;
+        display_height = 768;
         x_scale_pct_min = 100; // Left edge
         x_scale_pct_max = 100; // Right edge
         y_scale_pct_min = 100; // Top edge
@@ -141,6 +150,8 @@ int main() {
 
     // Set variables to config file contents
     else {
+        display_width = config.display_width;
+        display_height = config.display_height;
         x_scale_pct_min = config.x_scale_pct_min;
         x_scale_pct_max = config.x_scale_pct_max;
         y_scale_pct_min = config.y_scale_pct_min;
@@ -205,24 +216,10 @@ int main() {
     tmin_y = abs[1];
     tmax_y = abs[2];
 
-    // Get reference to display
-    Display *disp;
-    Screen *scr;
-    Window root_window;
-    
-    // Open display and get screen    
-    disp = XOpenDisplay(0);
-    root_window = XRootWindow(disp, 0);
-    scr = ScreenOfDisplay(disp, 0);
     double sr, tr, xo, yo;
 
-    // Get screen resolution
-    int sx = scr->width;
-    int sy = scr->height;
-
     // Calculate screen ratio
-    sr = (float)sx / (float)sy;
-
+    sr = (float)display_width / (float)display_height;
     // Calculate touchpad ratio
     tr = (float)tmax_x / (float)tmax_y;
 
