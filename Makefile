@@ -1,5 +1,5 @@
 CC = gcc
-LDFLAGS = -lX11 -linih
+LDFLAGS = -linih
 TARGET = abs-c
 
 all: $(TARGET) 

@@ -18,7 +18,6 @@ int quit() {
 
 typedef struct
 {
-    int version;
     int display_width;
     int display_height;
     float x_scale_pct_min;
@@ -41,13 +40,13 @@ static int handler(void* user, const char* section, const char* name,
     } else if (MATCH("display", "height")) {
         pconfig->display_height = atoi(value);
     } else if (MATCH("area", "x_scale_pct_min")) {
-        pconfig->x_scale_pct_min = atoi(value);
+        pconfig->x_scale_pct_min = atof(value);
     } else if (MATCH("area", "x_scale_pct_max")) {
-        pconfig->x_scale_pct_max = atoi(value);
+        pconfig->x_scale_pct_max = atof(value);
     } else if (MATCH("area", "y_scale_pct_min")) {
-        pconfig->y_scale_pct_min = atoi(value);
+        pconfig->y_scale_pct_min = atof(value);
     } else if (MATCH("area", "y_scale_pct_max")) {
-        pconfig->y_scale_pct_max = atoi(value);
+        pconfig->y_scale_pct_max = atof(value);
     } else if (MATCH("area", "keep_ratio")) {
         pconfig->keep_ratio = atoi(value);
     } else if (MATCH("area", "use_pen")) {
@@ -134,7 +133,7 @@ int main() {
     char config_path[50];
     strcpy(config_path, getenv("HOME"));
     strcat(config_path, "/.config/abs-c.ini");
-
+    printf("Loading config from %s\n", config_path);
     // Try to load config from $HOME/.config/
     if (ini_parse(config_path, handler, &config) < 0) {
         // Use defaults if above fails
@@ -169,6 +168,8 @@ int main() {
     char *tpad1;
     char *tpad2;
     char *tpad3;
+    char *tpad4;
+    bool is_mac;
 
     if (use_pen == 1) {
         pen = "Pen";
@@ -177,6 +178,7 @@ int main() {
         tpad1 = "Touchpad";
         tpad2 = "TouchPad";
         tpad3 = "Synaptics";
+        tpad4 = "bcm5974";
     }
 
     ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
@@ -188,7 +190,8 @@ int main() {
         if(strstr(name, "Mouse") != NULL) {
             is_mouse = true;
         }
-        if(is_mouse != true) {
+
+        if (is_mouse != true) {
             if (use_pen == 1) {
                 if (strstr(name,pen) != NULL){found = 1; break;}
             }
@@ -197,28 +200,39 @@ int main() {
             else if (found != 1 &
                 strstr(name,tpad1) != NULL |
                 strstr(name,tpad2) != NULL |
-                strstr(name,tpad3) != NULL){found = 1; break;}
-            }
-        is_mouse = false;
+                strstr(name,tpad3) != NULL |
+                strstr(name,tpad4) != NULL){found = 1; break;}
         }
+        is_mouse = false;
+    }
+
+        // Check if device is uses the bcm5974 chip (Apple)
+        if (strstr(name,tpad4) != NULL) {
+            is_mac = true;
+        }
+        else {
+            is_mac = false;
+        }
+
     // Exit if no touchpad is detected
     if (found != 1){printf("Device not found, exiting...\n"); exit(0);};
-
-    struct input_event ev;
-    int tmin_x,tmax_x,tmin_y,tmax_y,x,y,x_old,y_old,int_y,int_x;
 
     // Get min and max touchpad values
     int abs[1];
     ioctl(fd, EVIOCGABS(ABS_X), abs);
-    tmin_x = abs[1];
-    tmax_x = abs[2];
+    int tmin_x = abs[1];
+    int tmax_x = abs[2];
     ioctl(fd, EVIOCGABS(ABS_Y), abs);
-    tmin_y = abs[1];
-    tmax_y = abs[2];
+    int tmin_y = abs[1];
+    int tmax_y = abs[2];
 
-    double sr, tr, xo, yo;
+    // Fix area if using a Mac Touchpad (bcm5974)
+    if (is_mac == true) {
+    tmin_y = tmin_y +  1350;
+    }
 
     // Calculate screen ratio
+    double sr, tr, xo, yo;
     sr = (float)display_width / (float)display_height;
     // Calculate touchpad ratio
     tr = (float)tmax_x / (float)tmax_y;
@@ -266,14 +280,16 @@ int main() {
     bool update = false;
 
     printf("Press Ctrl-C to quit\n");
-    
-    int tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
 
+    // Init virtual tablet    
+    int tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
     struct input_event tab_ev[2];
     memset(tab_ev, 0, sizeof(tab_ev));
 
+    // Init values and start main loop
+    int x,y,x_old,y_old;
+    struct input_event ev;
     while(1) {
-        
         // Read event from touchpad
         read(fd,&ev, sizeof(ev));        
 
@@ -282,7 +298,7 @@ int main() {
         if(ev.code == ABS_Y) {y = ev.value;}
 
         // Only update position if value has changed
-        if(x != y_old && y > 0) {
+        if(x != y_old && y != 0) {
             //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[0].type = EV_ABS;
             tab_ev[0].code = ABS_Y;
@@ -294,7 +310,7 @@ int main() {
 
         // Only update position if value has changed
         // "x > 0" is used to prevent cursor from flickering to left edge
-        if(y != x_old && x > 0) {
+        if(y != x_old && x != 0) {
             //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[1].type = EV_ABS;
             tab_ev[1].code = ABS_X;
