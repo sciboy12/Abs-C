@@ -36,9 +36,13 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 ## Usage
 
-If playing on osu!Lazer, disable High Precision Mouse and Fullscreen within Lazer's settings.
+If playing on osu!Lazer, disable High Precision Mouse (and Fullscreen, if on Wayland) within Lazer's settings.
+
+Add your user to the input group:
+
+`sudo usermod –a –G input $USER`
 
 Run with:
 ```
-sudo ./abs-c
+./abs-c
 ```
