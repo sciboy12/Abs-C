@@ -7,7 +7,7 @@ If you encounter any problems, please ask on the [Discord](https://discord.gg/vK
 
 ## Setup and compilation
 ```
-sudo apt install libx11-dev
+sudo apt install libinih-dev
 cd (Wherever you saved Abs-C to)
 make
 ```
@@ -36,9 +36,9 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 ## Usage
 
-If playing on osu!Lazer, disable High Precision Mouse (and Fullscreen, if on Wayland) within Lazer's settings.
+If playing on osu!Lazer, disable High Precision Mouse (and Fullscreen/Confine mouse cursor to window, if on Wayland) within Lazer's settings.
 
-Add your user to the input group:
+Add your user to the input group (reboot afterwards):
 
 `sudo usermod –a –G input $USER`
 
