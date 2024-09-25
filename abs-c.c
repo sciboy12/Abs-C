@@ -9,10 +9,15 @@
 #include <string.h>
 #include <ini.h>
 
-// WIP
-int quit() {
-    //extern int tab_fd;
-    //ioctl(tab_fd, UI_DEV_DESTROY);
+// Flag to control the main loop
+volatile sig_atomic_t stop = 0;
+int tab_fd;
+
+void quit() {
+    printf("\nExiting.\n");
+    stop = 1;
+
+    ioctl(tab_fd, UI_DEV_DESTROY);
     exit(0);
     }
 
@@ -57,6 +62,7 @@ static int handler(void* user, const char* section, const char* name,
     return 1;
 }
 
+// Creates the virtual tablet and returns it's file descriptor
 int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
     if(fd < 0) {
@@ -115,8 +121,8 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
 
 
 int main() {
-    // WIP
-    //signal(SIGTERM, quit);
+    signal(SIGINT, quit);
+    signal(SIGTERM, quit);
 
     int display_width;
     int display_height;
@@ -134,6 +140,7 @@ int main() {
     strcpy(config_path, getenv("HOME"));
     strcat(config_path, "/.config/abs-c.ini");
     printf("Loading config from %s\n", config_path);
+
     // Try to load config from $HOME/.config/
     if (ini_parse(config_path, handler, &config) < 0) {
         // Use defaults if above fails
@@ -147,7 +154,7 @@ int main() {
         use_pen = 0;
     }
 
-    // Set variables to config file contents
+    // Set variables to config file contents if parsing succeeds
     else {
         display_width = config.display_width;
         display_height = config.display_height;
@@ -160,10 +167,10 @@ int main() {
     }
 
     
-    // Detect touchpad
+    // Try to detect touchpad using preset keywords
     struct dirent **namelist;
     int i, ndevs, fd, found;
-    char path[64],name[64];
+    char path[32],name[256];
     char *pen;
     char *tpad1;
     char *tpad2;
@@ -172,7 +179,7 @@ int main() {
     bool is_mac;
 
     if (use_pen == 1) {
-        pen = "Pen";
+        pen = "Stylus";
     }
     else {
         tpad1 = "Touchpad";
@@ -187,6 +194,7 @@ int main() {
         snprintf(path, sizeof path, "%s%s", "/dev/input/", namelist[i]->d_name);
         fd = open(path, O_RDONLY);
         ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+
         if(strstr(name, "Mouse") != NULL) {
             is_mouse = true;
         }
@@ -196,7 +204,7 @@ int main() {
                 if (strstr(name,pen) != NULL){found = 1; break;}
             }
 
-            // Check for fuzzy match
+            // Check for keyword match
             else if (found != 1 &
                 strstr(name,tpad1) != NULL |
                 strstr(name,tpad2) != NULL |
@@ -205,15 +213,16 @@ int main() {
         }
         is_mouse = false;
     }
-
-        // Check if device is uses the bcm5974 chip (Apple)
-        if (strstr(name,tpad4) != NULL) {
-            is_mac = true;
+        // Ensure touchpad mode is active
+        if (use_pen != 1) {
+            // Check if the touchpad uses the bcm5974 chip (Apple)
+            if (strstr(name,tpad4) != NULL) {
+                is_mac = true;
+            }
+            else {
+                is_mac = false;
+            }
         }
-        else {
-            is_mac = false;
-        }
-
     // Exit if no touchpad is detected
     if (found != 1){printf("Device not found, exiting...\n"); exit(0);};
 
@@ -231,15 +240,14 @@ int main() {
     tmin_y = tmin_y +  1350;
     }
 
-    // Calculate screen ratio
+    // Calculate screen and touchpad aspect ratios
     double sr, tr, xo, yo;
     sr = (float)display_width / (float)display_height;
-    // Calculate touchpad ratio
     tr = (float)tmax_x / (float)tmax_y;
 
     // Compensate for screen/touchpad ratio difference and center the active area
     // This is to ensure there is no stretching of the area
-    // Equivalent to "Keep aspect ratio" on monitors
+    // Equivalent to "Keep aspect ratio" setting on monitors
     if (keep_ratio == 1) {
         if (sr < tr) {
 
@@ -282,14 +290,14 @@ int main() {
     printf("Press Ctrl-C to quit\n");
 
     // Init virtual tablet    
-    int tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
+    tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
     struct input_event tab_ev[2];
     memset(tab_ev, 0, sizeof(tab_ev));
 
-    // Init values and start main loop
+    // Init axis/event values and start main loop
     int x,y,x_old,y_old;
     struct input_event ev;
-    while(1) {
+    while(!stop) {
         // Read event from touchpad
         read(fd,&ev, sizeof(ev));        
 
@@ -304,19 +312,17 @@ int main() {
             tab_ev[0].code = ABS_Y;
             tab_ev[0].value = y;
             write(tab_fd, tab_ev, sizeof(tab_ev));
-
             update = true;
         }
 
         // Only update position if value has changed
-        // "x > 0" is used to prevent cursor from flickering to left edge
+        // "x != 0" is used to prevent cursor from flickering to left edge
         if(y != x_old && x != 0) {
             //memset(tab_ev, 0, sizeof(tab_ev));
             tab_ev[1].type = EV_ABS;
             tab_ev[1].code = ABS_X;
             tab_ev[1].value = x;
             write(tab_fd, tab_ev, sizeof(tab_ev));
-
             update = true;
         }
 
