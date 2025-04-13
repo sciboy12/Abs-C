@@ -8,6 +8,8 @@
 #include <signal.h>
 #include <string.h>
 #include <ini.h>
+#include <poll.h>
+#include <sched.h>
 
 // Flag to control the main loop
 volatile sig_atomic_t stop = 0;
@@ -65,53 +67,36 @@ static int handler(void* user, const char* section, const char* name,
 // Creates the virtual tablet and returns it's file descriptor
 int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
-    if(fd < 0) {
-        printf("Failed to access /dev/uinput\n");
+    if (fd < 0) {
+        perror("Failed to open /dev/uinput");
         exit(EXIT_FAILURE);
     }
 
-    #define EV_KEY          0x01
-    #define EV_REL          0x02
-    #define EV_ABS          0x03
-    #define UI_SET_PROPBIT    _IOW(UINPUT_IOCTL_BASE, 110, int)
-
     ioctl(fd, UI_SET_EVBIT, EV_KEY);
-    ioctl(fd, UI_SET_EVBIT, EV_SYN);
-
     ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
-    //ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
 
     ioctl(fd, UI_SET_EVBIT, EV_ABS);
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
-    //ioctl(fd, UI_SET_KEYBIT, ABS_PRESSURE);
-    //ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
-    #define UINPUT_MAX_NAME_SIZE    80
+    ioctl(fd, UI_SET_EVBIT, EV_SYN);
 
-    struct uinput_user_dev {
-        char name[UINPUT_MAX_NAME_SIZE];
-        struct input_id id;
-            int ff_effects_max;
-            int absmax[ABS_MAX + 1];
-            int absmin[ABS_MAX + 1];
-            int absfuzz[ABS_MAX + 1];
-            int absflat[ABS_MAX + 1];
-    };
-
-    struct uinput_user_dev uidev;
-
-    memset(&uidev, 0, sizeof(uidev));
-
+    struct uinput_user_dev uidev = {0};
     snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "Abs-C Virtual Tablet");
     uidev.id.bustype = BUS_USB;
     uidev.id.vendor  = 0x1234;
     uidev.id.product = 0xfedc;
     uidev.id.version = 1;
+
     uidev.absmin[ABS_X] = tmin_x;
-    uidev.absmax[ABS_X] = tmax_x + 1;
+    uidev.absmax[ABS_X] = tmax_x;
+    uidev.absfuzz[ABS_X] = 0;
+    uidev.absflat[ABS_X] = 0;
+
     uidev.absmin[ABS_Y] = tmin_y;
     uidev.absmax[ABS_Y] = tmax_y;
+    uidev.absfuzz[ABS_Y] = 0;
+    uidev.absflat[ABS_Y] = 0;
 
     write(fd, &uidev, sizeof(uidev));
     ioctl(fd, UI_DEV_CREATE);
@@ -287,65 +272,47 @@ int main() {
     // Init update indicator
     bool update = false;
 
-    printf("Press Ctrl-C to quit\n");
-
     // Init virtual tablet    
     tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
     struct input_event tab_ev[2];
     memset(tab_ev, 0, sizeof(tab_ev));
 
-    // Init axis/event values and start main loop
-    int x,y,x_old,y_old;
+    // After setting up everything and before entering the loop:
+    struct sched_param param = { .sched_priority = 20 };
+    if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
+        perror("Failed to set real-time priority");
+    }
+
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
     struct input_event ev;
-    while(!stop) {
-        // Read event from touchpad
-        read(fd,&ev, sizeof(ev));        
+    struct input_event out_ev[3];
 
-        // Set values according to event codes
-        if(ev.code == ABS_X) {x = ev.value;}
-        if(ev.code == ABS_Y) {y = ev.value;}
+    int x = 0, y = 0, x_old = -1, y_old = -1;
 
-        // Only update position if value has changed
-        if(x != y_old && y != 0) {
-            //memset(tab_ev, 0, sizeof(tab_ev));
-            tab_ev[0].type = EV_ABS;
-            tab_ev[0].code = ABS_Y;
-            tab_ev[0].value = y;
-            write(tab_fd, tab_ev, sizeof(tab_ev));
-            update = true;
+    printf("Press Ctrl-C to quit\n");
+
+    while (!stop) {
+        if (poll(&pfd, 1, -1) <= 0) continue;
+        if (read(fd, &ev, sizeof(ev)) <= 0) continue;
+
+        int n = 0;
+        while (read(fd, &ev, sizeof(ev)) > 0) {
+            if (ev.type == EV_ABS) {
+                if (ev.code == ABS_X) x = ev.value;
+                if (ev.code == ABS_Y) y = ev.value;
+            }
+            if (ev.type == EV_SYN && ev.code == SYN_REPORT) break;
         }
 
-        // Only update position if value has changed
-        // "x != 0" is used to prevent cursor from flickering to left edge
-        if(y != x_old && x != 0) {
-            //memset(tab_ev, 0, sizeof(tab_ev));
-            tab_ev[1].type = EV_ABS;
-            tab_ev[1].code = ABS_X;
-            tab_ev[1].value = x;
-            write(tab_fd, tab_ev, sizeof(tab_ev));
-            update = true;
+        if ((x != x_old || y != y_old) && x > 0 && y > 0) {
+            out_ev[0] = (struct input_event){ .type = EV_ABS, .code = ABS_X, .value = x };
+            out_ev[1] = (struct input_event){ .type = EV_ABS, .code = ABS_Y, .value = y };
+            out_ev[2] = (struct input_event){ .type = EV_SYN, .code = SYN_REPORT, .value = 0 };
+
+            write(tab_fd, out_ev, sizeof(struct input_event) * 3);
+
+            x_old = x;
+            y_old = y;
         }
-
-        // Only sync if needed
-        if (update == true) {
-            //memset(tab_ev, 0, sizeof(tab_ev));
-            tab_ev[0].type = EV_SYN;
-            tab_ev[0].code = SYN_REPORT;
-            tab_ev[0].value = 0;
-            //write(tab_fd, tab_ev, sizeof(tab_ev));
-
-            //memset(tab_ev, 0, sizeof(tab_ev));
-            tab_ev[1].type = EV_SYN;
-            tab_ev[1].code = SYN_REPORT;
-            tab_ev[1].value = 0;
-            //write(tab_fd, tab_ev, sizeof(tab_ev));
-
-            // Reset update indicator
-            update = false;
-        }
-            
-        // Set old vars (for next iteration of the loop)
-        x_old = x;
-        y_old = y;
     }
 }
