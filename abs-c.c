@@ -10,15 +10,41 @@
 #include <ini.h>
 #include <poll.h>
 #include <sched.h>
+#include <sys/mman.h>
+#include <sys/capability.h>
+#include <limits.h>
+#include <libgen.h>
 
 volatile sig_atomic_t stop = 0;
 int tab_fd;
 
-void quit() {
+void quit(int sig) {
+    (void)sig;
     printf("\nExiting.\n");
     stop = 1;
     if (tab_fd) ioctl(tab_fd, UI_DEV_DESTROY);
     exit(0);
+}
+
+void check_caps(const char *binary_name) {
+    char fullpath[PATH_MAX];
+    if (!realpath(binary_name, fullpath)) {
+        strncpy(fullpath, binary_name, PATH_MAX);
+    }
+
+    cap_t caps = cap_get_proc();
+    if (!caps) {
+        perror("cap_get_proc failed");
+        return;
+    }
+
+    cap_flag_value_t cap_flag;
+    if (cap_get_flag(caps, CAP_SYS_NICE, CAP_EFFECTIVE, &cap_flag) == 0 && cap_flag != CAP_SET) {
+        fprintf(stderr, "[!] Warning: CAP_SYS_NICE not set. Real-time priority might fail.\n");
+        fprintf(stderr, "    Run: sudo setcap cap_sys_nice=eip %s\n", fullpath);
+    }
+
+    cap_free(caps);
 }
 
 typedef struct {
@@ -79,9 +105,11 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     return fd;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     signal(SIGINT, quit);
     signal(SIGTERM, quit);
+
+    check_caps(argv[0]);
 
     configuration config = {
         .display_width = 1366,
@@ -177,6 +205,7 @@ int main() {
 
     struct sched_param param = { .sched_priority = 20 };
     sched_setscheduler(0, SCHED_FIFO, &param);
+    mlockall(MCL_CURRENT | MCL_FUTURE);
 
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     struct input_event ev_buf[64];
