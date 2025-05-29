@@ -56,6 +56,7 @@ typedef struct {
     float y_scale_pct_max;
     int keep_ratio;
     int use_pen;
+    bool enable_buttons;
 } configuration;
 
 static int handler(void* user, const char* section, const char* name, const char* value) {
@@ -68,7 +69,8 @@ static int handler(void* user, const char* section, const char* name, const char
     else if (MATCH("area", "y_scale_pct_min")) cfg->y_scale_pct_min = atof(value);
     else if (MATCH("area", "y_scale_pct_max")) cfg->y_scale_pct_max = atof(value);
     else if (MATCH("area", "keep_ratio")) cfg->keep_ratio = atoi(value);
-    else if (MATCH("area", "use_pen")) cfg->use_pen = atoi(value);
+    else if (MATCH("input", "use_pen")) cfg->use_pen = atoi(value);
+    else if (MATCH("input", "enable_buttons")) cfg->enable_buttons = atoi(value);
     else return 0;
     return 1;
 }
@@ -119,7 +121,8 @@ int main(int argc, char *argv[]) {
         .y_scale_pct_min = 100,
         .y_scale_pct_max = 100,
         .keep_ratio = 1,
-        .use_pen = 0
+        .use_pen = 0,
+        .enable_buttons = 1
     };
 
     char config_path[256];
@@ -225,6 +228,13 @@ int main(int argc, char *argv[]) {
             if (ev->type == EV_ABS) {
                 if (ev->code == ABS_X) x = ev->value;
                 else if (ev->code == ABS_Y) y = ev->value;
+            }
+            if (config.enable_buttons && ev->type == EV_KEY && ev->code == BTN_LEFT) {
+                struct input_event btn_ev[2] = {
+                    { .type = EV_KEY, .code = BTN_LEFT, .value = ev->value },
+                    { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+                };
+                write(tab_fd, btn_ev, sizeof(btn_ev));
             }
             if (ev->type == EV_SYN && ev->code == SYN_REPORT) {
                 if ((x != x_old || y != y_old) && x > 0 && y > 0) {
