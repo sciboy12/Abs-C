@@ -50,24 +50,25 @@ void check_caps(const char *binary_name) {
 typedef struct {
     int display_width;
     int display_height;
-    float x_scale_pct_min;
-    float x_scale_pct_max;
-    float y_scale_pct_min;
-    float y_scale_pct_max;
+    float x_offset_pct;
+    float x_scale_pct;
+    float y_offset_pct;
+    float y_scale_pct;
     int keep_ratio;
     int use_pen;
     bool enable_buttons;
 } configuration;
+
 
 static int handler(void* user, const char* section, const char* name, const char* value) {
     configuration* cfg = (configuration*)user;
     #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
     if (MATCH("display", "width")) cfg->display_width = atoi(value);
     else if (MATCH("display", "height")) cfg->display_height = atoi(value);
-    else if (MATCH("area", "x_scale_pct_min")) cfg->x_scale_pct_min = atof(value);
-    else if (MATCH("area", "x_scale_pct_max")) cfg->x_scale_pct_max = atof(value);
-    else if (MATCH("area", "y_scale_pct_min")) cfg->y_scale_pct_min = atof(value);
-    else if (MATCH("area", "y_scale_pct_max")) cfg->y_scale_pct_max = atof(value);
+    else if (MATCH("area", "x_offset_pct")) cfg->x_offset_pct = atof(value);
+    else if (MATCH("area", "x_scale_pct")) cfg->x_scale_pct = atof(value);
+    else if (MATCH("area", "y_offset_pct")) cfg->y_offset_pct = atof(value);
+    else if (MATCH("area", "y_scale_pct")) cfg->y_scale_pct = atof(value);
     else if (MATCH("area", "keep_ratio")) cfg->keep_ratio = atoi(value);
     else if (MATCH("input", "use_pen")) cfg->use_pen = atoi(value);
     else if (MATCH("input", "enable_buttons")) cfg->enable_buttons = atoi(value);
@@ -116,14 +117,15 @@ int main(int argc, char *argv[]) {
     configuration config = {
         .display_width = 1366,
         .display_height = 768,
-        .x_scale_pct_min = 100,
-        .x_scale_pct_max = 100,
-        .y_scale_pct_min = 100,
-        .y_scale_pct_max = 100,
+        .x_offset_pct = 0,
+        .x_scale_pct = 100,
+        .y_offset_pct = 0,
+        .y_scale_pct = 100,
         .keep_ratio = 1,
         .use_pen = 0,
         .enable_buttons = 1
     };
+
 
     char config_path[256];
     snprintf(config_path, sizeof(config_path), "%s/.config/abs-c.ini", getenv("HOME"));
@@ -193,15 +195,20 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    float x_scale_min = config.x_scale_pct_min * 0.01;
-    float x_scale_max = config.x_scale_pct_max * 0.01;
-    float y_scale_min = config.y_scale_pct_min * 0.01;
-    float y_scale_max = config.y_scale_pct_max * 0.01;
+    float x_offset = config.x_offset_pct * 0.01f;
+    float x_scale  = config.x_scale_pct  * 0.01f;
+    float y_offset = config.y_offset_pct * 0.01f;
+    float y_scale  = config.y_scale_pct  * 0.01f;
 
-    int new_tmin_x = tmax_x - (x_scale_min * (tmax_x - tmin_x));
-    int new_tmax_x = tmin_x + (x_scale_max * (tmax_x - tmin_x));
-    int new_tmin_y = tmax_y - (y_scale_min * (tmax_y - tmin_y));
-    int new_tmax_y = tmin_y + (y_scale_max * (tmax_y - tmin_y));
+    int tx_range = tmax_x - tmin_x;
+    int ty_range = tmax_y - tmin_y;
+
+    int new_tmin_x = tmin_x + (int)(tx_range * x_offset);
+    int new_tmax_x = new_tmin_x + (int)(tx_range * x_scale);
+
+    int new_tmin_y = tmin_y + (int)(ty_range * y_offset);
+    int new_tmax_y = new_tmin_y + (int)(ty_range * y_scale);
+
 
     ioctl(fd, EVIOCGRAB, 1);
     tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
@@ -237,7 +244,7 @@ int main(int argc, char *argv[]) {
                 write(tab_fd, btn_ev, sizeof(btn_ev));
             }
             if (ev->type == EV_SYN && ev->code == SYN_REPORT) {
-                if ((x != x_old || y != y_old) && x > 0 && y > 0) {
+                if ((x != x_old || y != y_old)) {
                     struct input_event out_ev[3] = {
                         { .type = EV_ABS, .code = ABS_X, .value = x },
                         { .type = EV_ABS, .code = ABS_Y, .value = y },
