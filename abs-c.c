@@ -195,19 +195,17 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    float x_offset = config.x_offset_pct * 0.01f;
-    float x_scale  = config.x_scale_pct  * 0.01f;
-    float y_offset = config.y_offset_pct * 0.01f;
-    float y_scale  = config.y_scale_pct  * 0.01f;
+    float x_center = (tmin_x + tmax_x) / 2.0f + config.x_offset_pct * 0.01f * (tmax_x - tmin_x) / 2.0f;
+    float y_center = (tmin_y + tmax_y) / 2.0f + config.y_offset_pct * 0.01f * (tmax_y - tmin_y) / 2.0f;
 
-    int tx_range = tmax_x - tmin_x;
-    int ty_range = tmax_y - tmin_y;
+    float x_half_range = (tmax_x - tmin_x) * config.x_scale_pct * 0.01f / 2.0f;
+    float y_half_range = (tmax_y - tmin_y) * config.y_scale_pct * 0.01f / 2.0f;
 
-    int new_tmin_x = tmin_x + (int)(tx_range * x_offset);
-    int new_tmax_x = new_tmin_x + (int)(tx_range * x_scale);
+    int new_tmin_x = (int)(x_center - x_half_range);
+    int new_tmax_x = (int)(x_center + x_half_range);
+    int new_tmin_y = (int)(y_center - y_half_range);
+    int new_tmax_y = (int)(y_center + y_half_range);
 
-    int new_tmin_y = tmin_y + (int)(ty_range * y_offset);
-    int new_tmax_y = new_tmin_y + (int)(ty_range * y_scale);
 
 
     ioctl(fd, EVIOCGRAB, 1);
