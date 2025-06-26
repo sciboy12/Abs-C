@@ -13,15 +13,16 @@
 #include <sys/mman.h>
 #include <sys/capability.h>
 #include <limits.h>
-#include <libgen.h>
 
 volatile sig_atomic_t stop = 0;
 int tab_fd;
+int fd = -1;
 
 void quit(int sig) {
     (void)sig;
     printf("\nExiting.\n");
     stop = 1;
+    if (fd > 0) ioctl(fd, EVIOCGRAB, 0);  // ungrab device
     if (tab_fd) ioctl(tab_fd, UI_DEV_DESTROY);
     exit(0);
 }
@@ -128,7 +129,13 @@ int main(int argc, char *argv[]) {
 
 
     char config_path[256];
-    snprintf(config_path, sizeof(config_path), "%s/.config/abs-c.ini", getenv("HOME"));
+    const char *home = getenv("HOME");
+    if (!home) {
+        fprintf(stderr, "No HOME environment variable found.\n");
+        exit(EXIT_FAILURE);
+    }
+    snprintf(config_path, sizeof(config_path), "%s/.config/abs-c.ini", home);
+
     printf("Loading config from %s\n", config_path);
     ini_parse(config_path, handler, &config);
 
@@ -183,17 +190,6 @@ int main(int argc, char *argv[]) {
 
     double sr = (double)config.display_width / config.display_height;
     double tr = (double)tmax_x / tmax_y;
-    if (config.keep_ratio) {
-        if (sr < tr) {
-            int xo = tmax_x * sr / 16;
-            tmin_x += xo;
-            tmax_x -= xo;
-        } else {
-            int yo = tmax_y * sr / 16;
-            tmin_y += yo;
-            tmax_y -= yo;
-        }
-    }
 
     float x_center = (tmin_x + tmax_x) / 2.0f + config.x_offset_pct * 0.01f * (tmax_x - tmin_x) / 2.0f;
     float y_center = (tmin_y + tmax_y) / 2.0f + config.y_offset_pct * 0.01f * (tmax_y - tmin_y) / 2.0f;
@@ -201,12 +197,28 @@ int main(int argc, char *argv[]) {
     float x_half_range = (tmax_x - tmin_x) * config.x_scale_pct * 0.01f / 2.0f;
     float y_half_range = (tmax_y - tmin_y) * config.y_scale_pct * 0.01f / 2.0f;
 
+    // Adjust for aspect ratio
+    float desired_width = (tmax_x - tmin_x) * config.x_scale_pct * 0.01f;
+    float desired_height = (tmax_y - tmin_y) * config.y_scale_pct * 0.01f;
+    float desired_ratio = desired_width / desired_height;
+
+    if (config.keep_ratio) {
+        if (desired_ratio > sr) {
+            // Width too big relative to height -> adjust height
+            desired_height = desired_width / sr;
+        } else {
+            // Height too big relative to width -> adjust width
+            desired_width = desired_height * sr;
+        }
+    }
+
+    x_half_range = desired_width / 2.0f;
+    y_half_range = desired_height / 2.0f;
+
     int new_tmin_x = (int)(x_center - x_half_range);
     int new_tmax_x = (int)(x_center + x_half_range);
     int new_tmin_y = (int)(y_center - y_half_range);
     int new_tmax_y = (int)(y_center + y_half_range);
-
-
 
     ioctl(fd, EVIOCGRAB, 1);
     tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
