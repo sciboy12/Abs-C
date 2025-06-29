@@ -10,6 +10,7 @@ If you encounter any problems, please ask on the [Discord](https://discord.gg/vK
 sudo apt install libinih-dev
 cd (Wherever you saved Abs-C to)
 make
+sudo setcap cap_sys_nice=eip ./abs-c # used for low-latency input
 ```
 ## Configuration
 
@@ -17,20 +18,29 @@ Place abs-c.ini into ~/.config/
 
 ### Config options
 
+#### Display
+
+These need to match your current display resolution, in order for accurate scale calculations:
+
+`width`
+
+`height`
 #### Custom Area
 These values are relative to the center of the touchpad/screen and are measured in percent:
 
-`x_scale_pct_min`: Left edge
+`x_offset_pct`: X Offset
 
-`x_scale_pct_max`: Right Edge
+`x_scale_pct`: X Scale 
 
-`y_scale_pct_min`: Top edge
+`y_offset_pct`: Y Offset
 
-`y_scale_pct_max`: Bottom edge
+`y_scale_pct`: Y Scale
 
+`keep_ratio`: Enable/Disable Input Ratio Compensation (Similar to "Keep aspect ratio" on monitors)
 
-#### Other options
-`keep_ratio`: Enable/Disable Ratio Compensation (Similar to "Keep aspect ratio" on monitors)
+#### Input options
+
+`enable_buttons`: enable LMB on touchpads with a physical LMB
 
 `use_pen`: Use an active stylus on a compatible touchscreen tablet, instead of the touchpad
 
