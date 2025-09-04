@@ -13,6 +13,8 @@
 #include <sys/mman.h>
 #include <sys/capability.h>
 #include <limits.h>
+#include <getopt.h>
+#include <errno.h>
 
 volatile sig_atomic_t stop = 0;
 int tab_fd;
@@ -56,10 +58,8 @@ typedef struct {
     float y_offset_pct;
     float y_scale_pct;
     int keep_ratio;
-    int use_pen;
     bool enable_buttons;
 } configuration;
-
 
 static int handler(void* user, const char* section, const char* name, const char* value) {
     configuration* cfg = (configuration*)user;
@@ -71,7 +71,6 @@ static int handler(void* user, const char* section, const char* name, const char
     else if (MATCH("area", "y_offset_pct")) cfg->y_offset_pct = atof(value);
     else if (MATCH("area", "y_scale_pct")) cfg->y_scale_pct = atof(value);
     else if (MATCH("area", "keep_ratio")) cfg->keep_ratio = atoi(value);
-    else if (MATCH("input", "use_pen")) cfg->use_pen = atoi(value);
     else if (MATCH("input", "enable_buttons")) cfg->enable_buttons = atoi(value);
     else return 0;
     return 1;
@@ -109,11 +108,67 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     return fd;
 }
 
+void list_devices(void) {
+    struct dirent **namelist;
+    int ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
+    if (ndevs < 0) {
+        perror("scandir");
+        exit(EXIT_FAILURE);
+    }
+
+    char path[256], name[256];
+    for (int i = 0; i < ndevs; i++) {
+        snprintf(path, sizeof(path), "/dev/input/%s", namelist[i]->d_name);
+        int devfd = open(path, O_RDONLY | O_NONBLOCK);
+        if (devfd < 0) continue;
+        if (ioctl(devfd, EVIOCGNAME(sizeof(name)), name) >= 0) {
+            printf("%s: %s\n", path, name);
+        }
+        close(devfd);
+        free(namelist[i]);
+    }
+    free(namelist);
+}
+
+void print_usage(const char *prog) {
+    printf("Usage: %s [OPTIONS]\n", prog);
+    printf("  -h, --help           Show this help message\n");
+    printf("  -d, --device <path>  Override input device\n");
+    printf("  -l, --list           List available input devices\n");
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, quit);
     signal(SIGTERM, quit);
 
     check_caps(argv[0]);
+
+    const char *device_override = NULL;
+
+    static struct option long_opts[] = {
+        {"help",   no_argument,       0, 'h'},
+        {"device", required_argument, 0, 'd'},
+        {"list",   no_argument,       0, 'l'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "hd:l", long_opts, NULL)) != -1) {
+        switch (opt) {
+            case 'h':
+                print_usage(argv[0]);
+                return 0;
+            case 'd':
+                device_override = optarg;
+                break;
+            case 'l':
+                list_devices();
+                return 0;
+            default:
+                print_usage(argv[0]);
+                return 1;
+        }
+    }
 
     configuration config = {
         .display_width = 1366,
@@ -123,10 +178,8 @@ int main(int argc, char *argv[]) {
         .y_offset_pct = 0,
         .y_scale_pct = 100,
         .keep_ratio = 1,
-        .use_pen = 0,
         .enable_buttons = 1
     };
-
 
     char config_path[256];
     const char *home = getenv("HOME");
@@ -139,41 +192,47 @@ int main(int argc, char *argv[]) {
     printf("Loading config from %s\n", config_path);
     ini_parse(config_path, handler, &config);
 
-    struct dirent **namelist;
-    int ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
-    if (ndevs < 0) {
-        perror("scandir");
-        exit(EXIT_FAILURE);
-    }
-
-    int fd = -1;
     char path[256], name[256];
-    bool found = false, is_mac = false;
-    const char *targets[] = {"Touchpad", "TouchPad", "Synaptics", "bcm5974"};
+    bool found = false;
+    bool is_mac = false;
 
-    for (int i = 0; i < ndevs && !found; i++) {
-        snprintf(path, sizeof(path), "/dev/input/%s", namelist[i]->d_name);
-        fd = open(path, O_RDONLY);
-        if (fd < 0) continue;
-
+    if (device_override) {
+        fd = open(device_override, O_RDONLY);
+        if (fd < 0) {
+            perror("open device_override");
+            exit(EXIT_FAILURE);
+        }
         ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-        if (strstr(name, "Mouse")) {
-            close(fd);
-            continue;
+        found = true;
+    } else {
+        struct dirent **namelist;
+        int ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
+        if (ndevs < 0) {
+            perror("scandir");
+            exit(EXIT_FAILURE);
         }
 
-        if (config.use_pen && strstr(name, "Stylus")) {
-            found = true;
-        } else {
+        const char *targets[] = {"Touchpad", "TouchPad", "Synaptics", "bcm5974"};
+
+        for (int i = 0; i < ndevs && !found; i++) {
+            snprintf(path, sizeof(path), "/dev/input/%s", namelist[i]->d_name);
+            int devfd = open(path, O_RDONLY);
+            if (devfd < 0) continue;
+
+            ioctl(devfd, EVIOCGNAME(sizeof(name)), name);
             for (int j = 0; j < 4; j++) {
                 if (strstr(name, targets[j])) {
+                    fd = devfd;
                     found = true;
-                    if (!config.use_pen && strstr(name, "bcm5974")) is_mac = true;
+                    if (strstr(name, "bcm5974")) is_mac = true;
                     break;
                 }
             }
+            if (!found) close(devfd);
         }
-        if (!found) close(fd);
+
+        for (int i = 0; i < ndevs; i++) free(namelist[i]);
+        free(namelist);
     }
 
     if (!found) {
@@ -189,7 +248,6 @@ int main(int argc, char *argv[]) {
     if (is_mac) tmin_y += 1350;
 
     double sr = (double)config.display_width / config.display_height;
-    double tr = (double)tmax_x / tmax_y;
 
     float x_center = (tmin_x + tmax_x) / 2.0f + config.x_offset_pct * 0.01f * (tmax_x - tmin_x) / 2.0f;
     float y_center = (tmin_y + tmax_y) / 2.0f + config.y_offset_pct * 0.01f * (tmax_y - tmin_y) / 2.0f;
@@ -204,10 +262,8 @@ int main(int argc, char *argv[]) {
 
     if (config.keep_ratio) {
         if (desired_ratio > sr) {
-            // Width too big relative to height -> adjust height
             desired_height = desired_width / sr;
         } else {
-            // Height too big relative to width -> adjust width
             desired_width = desired_height * sr;
         }
     }
