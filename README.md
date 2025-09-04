@@ -1,4 +1,5 @@
 # Abs-C
+
 [Abs](https://github.com/sciboy12/Abs) ported to C
 
 Thanks to [danil1petrov](https://github.com/danil1petrov), who is the original creator of this port.
@@ -6,15 +7,17 @@ Thanks to [danil1petrov](https://github.com/danil1petrov), who is the original c
 If you encounter any problems, please ask on the [Discord](https://discord.gg/vKJfPyU) or file an issue regarding it.
 
 ## Setup and compilation
+
 ```
 sudo apt install libinih-dev
 cd (Wherever you saved Abs-C to)
 make
 sudo setcap cap_sys_nice=eip ./abs-c # used for low-latency input
 ```
+
 ## Configuration
 
-Place abs-c.ini into ~/.config/
+Place abs-c.ini into `~/.config/`
 
 ### Config options
 
@@ -25,7 +28,9 @@ These need to match your current display resolution, in order for accurate scale
 `width`
 
 `height`
+
 #### Custom Area
+
 These values are relative to the center of the touchpad/screen and are measured in percent:
 
 `x_offset_pct`: X Offset
@@ -40,9 +45,15 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 #### Input options
 
-`enable_buttons`: enable LMB on touchpads with a physical LMB
+`enable_buttons`: enable Left Click on touchpads with a physical LMB
 
-`use_pen`: Use an active stylus on a compatible touchscreen tablet, instead of the touchpad
+## Launch options
+
+  `-h`, `--help`:            Show the help message
+  
+  `-l`, `--list`:            List input devices with EV_ABS support
+  
+  `-d <arg>`, `--device <arg>`:    Specify device by path or name substring
 
 ## Usage
 
@@ -50,7 +61,7 @@ If playing on osu!Lazer, disable High Precision Mouse (and Fullscreen/Confine mo
 
 Add your user to the input group (reboot afterwards):
 
-`sudo usermod –a –G input $USER`
+`sudo usermod –a –G input $(whoami)`
 
 Run with:
 ```
