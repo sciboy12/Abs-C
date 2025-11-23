@@ -9,7 +9,7 @@ If you encounter any problems, please ask on the [Discord](https://discord.gg/vK
 ## Setup and compilation
 
 ```
-sudo apt install libinih-dev
+sudo apt install libinih-dev libcap-dev
 cd (Wherever you saved Abs-C to)
 make
 sudo setcap cap_sys_nice=eip ./abs-c # used for low-latency input
@@ -17,7 +17,7 @@ sudo setcap cap_sys_nice=eip ./abs-c # used for low-latency input
 
 ## Configuration
 
-Place abs-c.ini into `~/.config/`
+Place abs-c.ini into `~/.config/`.
 
 ### Config options
 
@@ -59,7 +59,7 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 If playing on osu!Lazer, disable High Precision Mouse (and Fullscreen/Confine mouse cursor to window, if on Wayland) within Lazer's settings.
 
-Add your user to the input group (reboot afterwards):
+Either run abs-c as root, or add your user to the input group (reboot afterwards):
 
 `sudo usermod –a –G input $(whoami)`
 
