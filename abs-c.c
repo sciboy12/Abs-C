@@ -13,8 +13,8 @@
 #include <sys/mman.h>
 #include <sys/capability.h>
 #include <limits.h>
-#include <errno.h>
 #include <sys/stat.h>
+#include <pwd.h>
 
 volatile sig_atomic_t stop = 0;
 int tab_fd;
@@ -27,6 +27,48 @@ void quit(int sig) {
     if (fd > 0) ioctl(fd, EVIOCGRAB, 0);
     if (tab_fd) ioctl(tab_fd, UI_DEV_DESTROY);
     exit(0);
+}
+
+// Internal helper: returns malloc'd home directory for the real user.
+static char *get_real_user_home(void) {
+    struct passwd *pw = NULL;
+    const char *sudo_user = getenv("SUDO_USER");
+
+    // If sudo was used, trust the env var — it's the only sane option.
+    if (sudo_user && sudo_user[0] != '\0') {
+        pw = getpwnam(sudo_user);
+        if (pw && pw->pw_dir && pw->pw_dir[0] != '\0')
+            return strdup(pw->pw_dir);
+    }
+
+    // Fallback: real UID (normal execution)
+    uid_t ruid = getuid();
+    pw = getpwuid(ruid);
+    if (pw && pw->pw_dir && pw->pw_dir[0] != '\0')
+        return strdup(pw->pw_dir);
+
+    return NULL;
+}
+
+// Public function:
+// Returns a malloc'd string with the full ~/.config/abs-c.ini path.
+// Caller must free() it. Returns NULL on failure.
+char *get_abs_c_config_path(void) {
+    char *home = get_real_user_home();
+    if (!home) return NULL;
+
+    const char *rel = "/.config/abs-c.ini";
+    size_t len = strlen(home) + strlen(rel) + 1;
+
+    char *path = malloc(len);
+    if (!path) {
+        free(home);
+        return NULL;
+    }
+
+    snprintf(path, len, "%s%s", home, rel);
+    free(home);
+    return path;
 }
 
 void check_caps(const char *binary_name) {
@@ -162,11 +204,16 @@ int main(int argc, char *argv[]) {
         .enable_buttons = 1
     };
 
-    char config_path[256];
-    const char *home = getenv("HOME");
-    if (!home) { fprintf(stderr, "No HOME environment variable\n"); exit(EXIT_FAILURE); }
-    snprintf(config_path, sizeof(config_path), "%s/.config/abs-c.ini", home);
-    ini_parse(config_path, handler, &config);
+    char *config_path = get_abs_c_config_path();
+    if (!config_path) {
+        fprintf(stderr, "Couldn't find the config file path. Using default settings.\n");
+    }
+    else {
+        printf("Loading config from %s\n", config_path);
+        ini_parse(config_path, handler, &config);
+        free(config_path);
+    }
+
 
     const char *dev_override = NULL;
     for (int i = 1; i < argc; i++) {
@@ -206,7 +253,7 @@ int main(int argc, char *argv[]) {
     free(namelist);
 
     if (!found) { fprintf(stderr, dev_override ? "No device matching '%s'\n" : "No suitable input device found.\n", dev_override); exit(EXIT_FAILURE); }
-    if (!usable) { fprintf(stderr, "Device '%s' is not usable (requires EV_ABS support)\n", dev_override); exit(EXIT_FAILURE); }
+    if (!usable) { fprintf(stderr, "Device '%s' is not usable (requires EV_ABS support)\n", dev_override);  exit(EXIT_FAILURE); }
 
     struct input_absinfo absinfo;
     ioctl(fd, EVIOCGABS(ABS_X), &absinfo);
