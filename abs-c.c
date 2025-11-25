@@ -174,12 +174,24 @@ void list_devices() {
 
         ioctl(devfd, EVIOCGNAME(sizeof(name)), name);
 
-        unsigned long evbits[(EV_MAX+7)/8] = {0};
+        unsigned long evbits[(EV_MAX + (sizeof(unsigned long)*8) - 1) /
+        (sizeof(unsigned long)*8)] = {0};
         ioctl(devfd, EVIOCGBIT(0, sizeof(evbits)), evbits);
-        bool has_abs = test_bit(EV_ABS, evbits);
 
-        if (has_abs) printf("%s: %s \n", path, name);
+        if (test_bit(EV_ABS, evbits)) {
+            unsigned long absbits[(ABS_MAX + (sizeof(unsigned long)*8) - 1) /
+            (sizeof(unsigned long)*8)] = {0};
 
+            ioctl(devfd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits);
+
+            bool has_x = test_bit(ABS_X, absbits);
+            bool has_y = test_bit(ABS_Y, absbits);
+
+            if (has_x && has_y) {
+                printf("%s: %s\n", path, name);
+
+            }
+        }
         close(devfd);
         free(namelist[i]);
     }
@@ -241,10 +253,26 @@ int main(int argc, char *argv[]) {
             else if (dev_override[0] != '/' && !strstr(name, dev_override)) { close(devfd); continue; }
         }
 
-        unsigned long evbits[(EV_MAX+7)/8] = {0};
+        unsigned long evbits[(EV_MAX + (sizeof(unsigned long)*8) - 1) /
+        (sizeof(unsigned long)*8)] = {0};
         ioctl(devfd, EVIOCGBIT(0, sizeof(evbits)), evbits);
 
-        if (test_bit(EV_ABS, evbits)) { fd = devfd; found = usable = true; }
+        if (test_bit(EV_ABS, evbits)) {
+            unsigned long absbits[(ABS_MAX + (sizeof(unsigned long)*8) - 1) /
+            (sizeof(unsigned long)*8)] = {0};
+
+            ioctl(devfd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits);
+
+            bool has_x = test_bit(ABS_X, absbits);
+            bool has_y = test_bit(ABS_Y, absbits);
+
+            if (has_x && has_y) {
+                fd = devfd;
+                found = usable = true;
+                printf("Using device %s (%s)\n", path, name);
+            }
+        }
+
         else if (dev_override) { found = true; usable = false; close(devfd); }
         else close(devfd);
     }
