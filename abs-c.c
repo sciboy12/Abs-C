@@ -199,6 +199,37 @@ void list_devices() {
     free(namelist);
 }
 
+static inline void emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty) {
+    struct input_event ev[3];
+    int n = 0;
+
+    if (x_dirty) {
+        ev[n++] = (struct input_event){
+            .type  = EV_ABS,
+            .code  = ABS_X,
+            .value = x
+        };
+    }
+
+    if (y_dirty) {
+        ev[n++] = (struct input_event){
+            .type  = EV_ABS,
+            .code  = ABS_Y,
+            .value = y
+        };
+    }
+
+    // Always terminate with SYN
+    ev[n++] = (struct input_event){
+        .type  = EV_SYN,
+        .code  = SYN_REPORT,
+        .value = 0
+    };
+
+    write(tab_fd, ev, n * sizeof(struct input_event));
+}
+
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, quit);
     signal(SIGTERM, quit);
@@ -319,40 +350,49 @@ int main(int argc, char *argv[]) {
 
     struct pollfd pfd = {.fd=fd, .events=POLLIN};
     struct input_event ev_buf[64];
-    int x=0, y=0, x_old=-1, y_old=-1;
 
     printf("Press Ctrl-C to quit\n");
 
-    while (!stop) {
-        if (poll(&pfd, 1, -1) <= 0) continue;
-        int len = read(fd, ev_buf, sizeof(ev_buf));
-        if (len <= 0) continue;
-        int nevents = len / sizeof(struct input_event);
+    int x = 0, y = 0;
+    int x_old = -1, y_old = -1;
 
-        for (int i = 0; i < nevents; i++) {
-            struct input_event *ev = &ev_buf[i];
-            if (ev->type == EV_ABS) {
-                if (ev->code == ABS_X) x = ev->value;
-                else if (ev->code == ABS_Y) y = ev->value;
+    while (!stop) {
+        if (poll(&pfd, 1, -1) <= 0)
+            continue;
+
+        struct input_event ev;
+        if (read(fd, &ev, sizeof(ev)) != sizeof(ev))
+            continue;
+
+        bool x_dirty = false;
+        bool y_dirty = false;
+
+        if (ev.type == EV_ABS) {
+            if (ev.code == ABS_X && ev.value != x_old) {
+                x = ev.value;
+                x_dirty = true;
             }
-            if (config.enable_buttons && ev->type == EV_KEY && ev->code == BTN_LEFT) {
-                struct input_event btn_ev[2] = {
-                    {.type=EV_KEY, .code=BTN_LEFT, .value=ev->value},
-                    {.type=EV_SYN, .code=SYN_REPORT, .value=0}
-                };
-                write(tab_fd, btn_ev, sizeof(btn_ev));
+            else if (ev.code == ABS_Y && ev.value != y_old) {
+                y = ev.value;
+                y_dirty = true;
             }
-            if (ev->type==EV_SYN && ev->code==SYN_REPORT) {
-                if (x!=x_old || y!=y_old) {
-                    struct input_event out_ev[3] = {
-                        {.type=EV_ABS, .code=ABS_X, .value=x},
-                        {.type=EV_ABS, .code=ABS_Y, .value=y},
-                        {.type=EV_SYN, .code=SYN_REPORT, .value=0}
-                    };
-                    write(tab_fd, out_ev, sizeof(out_ev));
-                    x_old = x; y_old = y;
-                }
+
+            if (x_dirty || y_dirty) {
+                emit_abs_delta(x, y, x_dirty, y_dirty);
+                x_old = x;
+                y_old = y;
             }
+        }
+
+        if (config.enable_buttons &&
+            ev.type == EV_KEY &&
+            ev.code == BTN_LEFT) {
+
+            struct input_event btn[2] = {
+                { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
+                { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+            };
+            write(tab_fd, btn, sizeof(btn));
         }
     }
 
