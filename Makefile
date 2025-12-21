@@ -1,8 +1,13 @@
 CC = gcc
-LDFLAGS = -linih -lcap
+LDFLAGS = -linih -lcap -lcjson -lwebsockets
 TARGET = abs-c
+SOURCES = abs-c.c tosuhandler.c
 
-all: $(TARGET) 
-	$(CC) -o $(TARGET) $(TARGET).c $(LDFLAGS)
+all: $(TARGET)
+
+$(TARGET): $(SOURCES)
+	$(CC) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
 clean:
 	$(RM) $(TARGET)
+

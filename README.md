@@ -9,7 +9,7 @@ If you encounter any problems, please ask on the [Discord](https://discord.gg/vK
 ## Setup and compilation
 
 ```
-sudo apt install libinih-dev libcap-dev
+sudo apt install libinih-dev libcap-dev libcjson-dev libwebsockets-dev
 cd (Wherever you saved Abs-C to)
 make
 sudo setcap cap_sys_nice=eip ./abs-c # used for low-latency input
@@ -45,7 +45,9 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 #### Input options
 
-`enable_buttons`: enable Left Click on touchpads with a physical LMB
+`enable_buttons`: Enable Left Click on touchpads with a physical LMB
+
+`enable_tosu`: Enable [Tosu](https://github.com/tosuapp/tosu) integration, for automatically toggling absolute mode depending on gameplay state
 
 ## Launch options
 

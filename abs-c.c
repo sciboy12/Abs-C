@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <pwd.h>
+#include "tosuhandler.h"
 
 volatile sig_atomic_t stop = 0;
 int tab_fd;
@@ -26,6 +27,7 @@ void quit(int sig) {
     stop = 1;
     if (fd > 0) ioctl(fd, EVIOCGRAB, 0);
     if (tab_fd) ioctl(tab_fd, UI_DEV_DESTROY);
+    tosu_shutdown();
     exit(0);
 }
 
@@ -95,6 +97,7 @@ typedef struct {
     float y_scale_pct;
     int keep_ratio;
     bool enable_buttons;
+    bool enable_tosu;
 } configuration;
 
 static int handler(void* user, const char* section, const char* name, const char* value) {
@@ -108,6 +111,7 @@ static int handler(void* user, const char* section, const char* name, const char
     else if (MATCH("area", "y_scale_pct")) cfg->y_scale_pct = atof(value);
     else if (MATCH("area", "keep_ratio")) cfg->keep_ratio = atoi(value);
     else if (MATCH("input", "enable_buttons")) cfg->enable_buttons = atoi(value);
+    else if (MATCH("input", "enable_tosu")) cfg->enable_tosu = atoi(value);
     else return 0;
     return 1;
 }
@@ -244,7 +248,8 @@ int main(int argc, char *argv[]) {
         .y_offset_pct = 0,
         .y_scale_pct = 100,
         .keep_ratio = 1,
-        .enable_buttons = 1
+        .enable_buttons = 1,
+        .enable_tosu = 0
     };
 
     char *config_path = get_abs_c_config_path();
@@ -351,48 +356,71 @@ int main(int argc, char *argv[]) {
     struct pollfd pfd = {.fd=fd, .events=POLLIN};
     struct input_event ev_buf[64];
 
-    printf("Press Ctrl-C to quit\n");
+
 
     int x = 0, y = 0;
     int x_old = -1, y_old = -1;
+    bool active;
+    if (config.enable_tosu == true) {
+        tosu_init();
+    }
+    else {
+        printf("Tosu integration is disabled.\n");
+        active = true;
+    }
 
+    printf("Press Ctrl-C to quit\n");
     while (!stop) {
-        if (poll(&pfd, 1, -1) <= 0)
-            continue;
+        if (config.enable_tosu == true) {
+            active = tosu_get_absolute_state();
 
-        struct input_event ev;
-        if (read(fd, &ev, sizeof(ev)) != sizeof(ev))
-            continue;
+        }
+        if (active == true) {
+            ioctl(fd, EVIOCGRAB, 1);
 
-        bool x_dirty = false;
-        bool y_dirty = false;
 
-        if (ev.type == EV_ABS) {
-            if (ev.code == ABS_X && ev.value != x_old) {
-                x = ev.value;
-                x_dirty = true;
+
+            if (poll(&pfd, 1, -1) <= 0)
+                continue;
+
+            struct input_event ev;
+            if (read(fd, &ev, sizeof(ev)) != sizeof(ev))
+                continue;
+
+            bool x_dirty = false;
+            bool y_dirty = false;
+
+            if (ev.type == EV_ABS) {
+                if (ev.code == ABS_X && ev.value != x_old) {
+                    x = ev.value;
+                    x_dirty = true;
+                }
+                else if (ev.code == ABS_Y && ev.value != y_old) {
+                    y = ev.value;
+                    y_dirty = true;
+                }
+
+                if (x_dirty || y_dirty) {
+                    emit_abs_delta(x, y, x_dirty, y_dirty);
+                    x_old = x;
+                    y_old = y;
+                }
             }
-            else if (ev.code == ABS_Y && ev.value != y_old) {
-                y = ev.value;
-                y_dirty = true;
-            }
 
-            if (x_dirty || y_dirty) {
-                emit_abs_delta(x, y, x_dirty, y_dirty);
-                x_old = x;
-                y_old = y;
+            if (config.enable_buttons &&
+                ev.type == EV_KEY &&
+                ev.code == BTN_LEFT) {
+
+                struct input_event btn[2] = {
+                    { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
+                    { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+                };
+                write(tab_fd, btn, sizeof(btn));
             }
         }
-
-        if (config.enable_buttons &&
-            ev.type == EV_KEY &&
-            ev.code == BTN_LEFT) {
-
-            struct input_event btn[2] = {
-                { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
-                { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
-            };
-            write(tab_fd, btn, sizeof(btn));
+        else {
+            ioctl(fd, EVIOCGRAB, 0);
+            sleep(1);
         }
     }
 
