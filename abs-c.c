@@ -1,3 +1,4 @@
+#include <time.h>
 #include <stdio.h>
 #include <linux/uinput.h>
 #include <stdlib.h>
@@ -369,11 +370,19 @@ int main(int argc, char *argv[]) {
         active = true;
     }
 
+    struct timespec ts_last;
+    clock_gettime(CLOCK_MONOTONIC, &ts_last);
+
     printf("Press Ctrl-C to quit\n");
     while (!stop) {
-        if (config.enable_tosu == true) {
-            active = tosu_get_absolute_state();
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        long dt_ms = (ts_now.tv_sec - ts_last.tv_sec) * 1000 +
+                    (ts_now.tv_nsec - ts_last.tv_nsec) / 1000000;
 
+        if (config.enable_tosu && dt_ms >= 16) { // ~60Hz
+            active = tosu_get_absolute_state();
+            ts_last = ts_now;
         }
         if (active == true) {
             ioctl(fd, EVIOCGRAB, 1);
