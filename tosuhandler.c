@@ -1,193 +1,148 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "tosuhandler.h"
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <time.h>
+#include <curl/curl.h>
 #include <cjson/cJSON.h>
-#include <libwebsockets.h>
 
-static pthread_mutex_t tosu_mutex = PTHREAD_MUTEX_INITIALIZER;
-static char *tosu_json = NULL;
-static size_t tosu_json_len = 0;
-static bool tosu_json_dirty = false;
-static bool running_ws_thread = false;
+// ---------------- CONFIG ----------------
+#define TOSU_URL "http://localhost:24050/json"
+#define POLL_INTERVAL_MS 500
+// ----------------------------------------
+
+struct curl_buf {
+    char *data;
+    size_t len;
+};
+
+static pthread_t poll_thread;
+static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static bool running = false;
 static bool last_abs_state = false;
 
-static struct lws_context *ws_context = NULL;
-static struct lws *ws_client = NULL;
-
-static const char *tosu_url = "127.0.0.1";
-static int tosu_port = 24050;
-static const char *tosu_path = "/websocket/v2";
-
-// ---- JSON parsing helper ----
+// ---------------- JSON LOGIC ----------------
 static bool should_enable_absolute(const cJSON *root) {
     if (!root) return false;
 
-    const cJSON *state = cJSON_GetObjectItem(root, "state");
-    if (!state) return false;
+    const cJSON *menu = cJSON_GetObjectItem(root, "menu");
+    if (!cJSON_IsObject(menu)) return false;
 
-    const cJSON *state_name = cJSON_GetObjectItem(state, "name");
-    if (!cJSON_IsString(state_name)) return false;
-    if (strcmp(state_name->valuestring, "play") != 0) return false;
+    const cJSON *state = cJSON_GetObjectItem(menu, "state");
+    const cJSON *mode  = cJSON_GetObjectItem(menu, "gameMode");
 
-    const cJSON *beatmap = cJSON_GetObjectItem(root, "beatmap");
-    if (!beatmap) return false;
+    if (!cJSON_IsNumber(state) || !cJSON_IsNumber(mode))
+        return false;
 
-    const cJSON *mode = cJSON_GetObjectItem(beatmap, "mode");
-    if (!mode) return false;
-
-    const cJSON *mode_number = cJSON_GetObjectItem(mode, "number");
-    if (!cJSON_IsNumber(mode_number)) return false;
-
-    return (mode_number->valueint == 0);
+    return state->valueint == 2 && mode->valueint == 0;
 }
 
-// ---- LWS callbacks ----
-static int ws_cb(struct lws *wsi, enum lws_callback_reasons reason,
-                 void *user, void *in, size_t len) {
+// ---------------- CURL CALLBACK ----------------
+static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t total = size * nmemb;
+    struct curl_buf *buf = userdata;
 
-    switch (reason) {
-        case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            printf("[tosu] WS connected\n");
-            break;
+    char *newp = realloc(buf->data, buf->len + total + 1);
+    if (!newp) return 0;
 
-        case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // copy incoming JSON to shared buffer
-            char *msg = malloc(len + 1);
-            if (!msg) break;
-            memcpy(msg, in, len);
-            msg[len] = '\0';
+    buf->data = newp;
+    memcpy(buf->data + buf->len, ptr, total);
+    buf->len += total;
+    buf->data[buf->len] = '\0';
 
-            pthread_mutex_lock(&tosu_mutex);
-            free(tosu_json);
-            tosu_json = msg;
-            tosu_json_len = len;
-            tosu_json_dirty = true;
-            pthread_mutex_unlock(&tosu_mutex);
-            break;
-        }
-
-        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-            printf("[tosu] WS connection error\n");
-            break;
-
-        case LWS_CALLBACK_CLOSED:
-            printf("[tosu] WS closed\n");
-            break;
-
-        default:
-            break;
-    }
-
-    return 0;
+    return total;
 }
 
-static struct lws_protocols protocols[] = {
-    {"tosu.v2", ws_cb, 0, 65536},
-    {NULL, NULL, 0, 0}
-};
-
-// ---- WebSocket thread ----
-static void *ws_thread_func(void *arg) {
+// ---------------- POLL THREAD ----------------
+static void *poll_thread_func(void *arg) {
     (void)arg;
 
-    struct lws_context_creation_info info;
-    memset(&info, 0, sizeof(info));
-    info.port = CONTEXT_PORT_NO_LISTEN;
-    info.protocols = protocols;
-    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    CURLM *multi = curl_multi_init();
+    CURL *easy = curl_easy_init();
 
-    ws_context = lws_create_context(&info);
-    if (!ws_context) {
-        fprintf(stderr, "[tosu] failed to create LWS context\n");
+    if (!multi || !easy) {
+        fprintf(stderr, "[tosu] curl init failed\n");
         return NULL;
     }
 
-    struct lws_client_connect_info ccinfo = {0};
-    ccinfo.context = ws_context;
-    ccinfo.address = tosu_url;
-    ccinfo.port = tosu_port;
-    ccinfo.path = tosu_path;
-    ccinfo.host = tosu_url;
-    ccinfo.origin = tosu_url;
-    ccinfo.protocol = protocols[0].name; // important: must match v2
-    ccinfo.ssl_connection = 0;
+    curl_easy_setopt(easy, CURLOPT_URL, TOSU_URL);
+    curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 500);
+    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, curl_write_cb);
 
-    ws_client = lws_client_connect_via_info(&ccinfo);
-    if (!ws_client) {
-        fprintf(stderr, "[tosu] failed to connect WS client\n");
+    while (running) {
+        struct curl_buf buf = {0};
+
+        curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buf);
+        curl_multi_add_handle(multi, easy);
+
+        int still_running = 0;
+        curl_multi_perform(multi, &still_running);
+
+        while (still_running && running) {
+            curl_multi_poll(multi, NULL, 0, 100, NULL);
+            curl_multi_perform(multi, &still_running);
+        }
+
+        curl_multi_remove_handle(multi, easy);
+
+        if (buf.data) {
+            cJSON *root = cJSON_Parse(buf.data);
+            if (root) {
+                bool current = should_enable_absolute(root);
+
+                pthread_mutex_lock(&state_mutex);
+                last_abs_state = current;
+                pthread_mutex_unlock(&state_mutex);
+
+                cJSON_Delete(root);
+            }
+            free(buf.data);
+        }
+            struct timespec ts = {
+                .tv_sec = POLL_INTERVAL_MS / 1000,
+                .tv_nsec = (POLL_INTERVAL_MS % 1000) * 1000000L
+            };
+            nanosleep(&ts, NULL);
+
     }
 
-    while (running_ws_thread && ws_context) {
-        lws_service(ws_context, 100); // poll 100ms
-    }
-
-    if (ws_context) {
-        lws_context_destroy(ws_context);
-        ws_context = NULL;
-    }
-
+    curl_easy_cleanup(easy);
+    curl_multi_cleanup(multi);
     return NULL;
 }
 
-static pthread_t ws_thread;
-
-// ---- Public API ----
+// ---------------- PUBLIC API ----------------
 void tosu_init(void) {
-    if (running_ws_thread) return;
-    running_ws_thread = true;
+    if (running) return;
 
-    pthread_mutex_lock(&tosu_mutex);
-    free(tosu_json);
-    tosu_json = NULL;
-    tosu_json_len = 0;
-    tosu_json_dirty = false;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    pthread_mutex_lock(&state_mutex);
     last_abs_state = false;
-    pthread_mutex_unlock(&tosu_mutex);
+    pthread_mutex_unlock(&state_mutex);
 
-    if (pthread_create(&ws_thread, NULL, ws_thread_func, NULL) != 0) {
-        perror("[tosu] ws thread creation failed");
-        running_ws_thread = false;
-    }
+    running = true;
+    pthread_create(&poll_thread, NULL, poll_thread_func, NULL);
 }
 
 void tosu_shutdown(void) {
-    if (!running_ws_thread) return;
+    if (!running) return;
 
-    running_ws_thread = false;
-    lws_cancel_service(ws_context);
-    pthread_join(ws_thread, NULL);
+    running = false;
+    pthread_join(poll_thread, NULL);
 
-    pthread_mutex_lock(&tosu_mutex);
-    free(tosu_json);
-    tosu_json = NULL;
-    tosu_json_len = 0;
-    tosu_json_dirty = false;
-    pthread_mutex_unlock(&tosu_mutex);
+    curl_global_cleanup();
 }
 
 bool tosu_get_absolute_state(void) {
-    char *local_json = NULL;
-
-    pthread_mutex_lock(&tosu_mutex);
-    if (tosu_json_dirty && tosu_json) {
-        local_json = strdup(tosu_json);
-        tosu_json_dirty = false;
-    }
-    pthread_mutex_unlock(&tosu_mutex);
-
-    if (!local_json) return last_abs_state;
-
-    cJSON *root = cJSON_Parse(local_json);
-    free(local_json);
-    if (!root) return last_abs_state;
-
-    bool current = should_enable_absolute(root);
-    cJSON_Delete(root);
-
-    last_abs_state = current;
-    return current;
+    pthread_mutex_lock(&state_mutex);
+    bool state = last_abs_state;
+    pthread_mutex_unlock(&state_mutex);
+    return state;
 }

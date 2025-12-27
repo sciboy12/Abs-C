@@ -1,5 +1,5 @@
 CC = gcc
-LDFLAGS = -linih -lcap -lcjson -lwebsockets
+LDFLAGS = -linih -lcap -lcjson -lcurl -lpthread
 TARGET = abs-c
 SOURCES = abs-c.c tosuhandler.c
 
