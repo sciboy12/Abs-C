@@ -18,6 +18,8 @@
 #include <pwd.h>
 #include "tosuhandler.h"
 
+#define INACTIVE_SLEEP_MS 100  // long sleep to save CPU
+
 volatile sig_atomic_t stop = 0;
 int tab_fd;
 int fd = -1;
@@ -30,6 +32,12 @@ void quit(int sig) {
     if (tab_fd) ioctl(tab_fd, UI_DEV_DESTROY);
     tosu_shutdown();
     exit(0);
+}
+
+static inline void set_grab(int fd, bool *grabbed, bool want) {
+    if (*grabbed == want) return;
+    if (ioctl(fd, EVIOCGRAB, want) == 0)
+        *grabbed = want;
 }
 
 // Internal helper: returns malloc'd home directory for the real user.
@@ -347,7 +355,6 @@ int main(int argc, char *argv[]) {
     int new_tmin_y = (int)(y_center - y_half_range);
     int new_tmax_y = (int)(y_center + y_half_range);
 
-    ioctl(fd, EVIOCGRAB, 1);
     tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
 
     struct sched_param param = {.sched_priority=20};
@@ -362,6 +369,8 @@ int main(int argc, char *argv[]) {
     int x = 0, y = 0;
     int x_old = -1, y_old = -1;
     bool active;
+    bool grabbed = false;
+
     if (config.enable_tosu == true) {
         tosu_init();
     }
@@ -384,11 +393,10 @@ int main(int argc, char *argv[]) {
             active = tosu_get_absolute_state();
             ts_last = ts_now;
         }
+        // Update device grab based on state
+        set_grab(fd, &grabbed, active);
+
         if (active == true) {
-            ioctl(fd, EVIOCGRAB, 1);
-
-
-
             if (poll(&pfd, 1, -1) <= 0)
                 continue;
 
@@ -428,10 +436,12 @@ int main(int argc, char *argv[]) {
             }
         }
         else {
-            ioctl(fd, EVIOCGRAB, 0);
-            sleep(1);
+            // Inactive: long sleep to reduce CPU, but wake often enough to detect activation
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = INACTIVE_SLEEP_MS * 1000000L;
+            nanosleep(&ts, NULL);
         }
     }
-
     return 0;
 }
