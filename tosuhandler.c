@@ -43,6 +43,7 @@ static bool should_enable_absolute(const cJSON *root) {
 
     const cJSON *state = cJSON_GetObjectItem(menu, "state");
     const cJSON *mode  = cJSON_GetObjectItem(menu, "gameMode");
+    const cJSON *mods  = cJSON_GetObjectItem(menu, "mods");
 
     if (!cJSON_IsNumber(state) || !cJSON_IsNumber(mode))
         return false;
@@ -50,31 +51,71 @@ static bool should_enable_absolute(const cJSON *root) {
     int current_state = state->valueint;
     int current_mode  = mode->valueint;
 
-    /* Update transition state under mutex so it's thread-safe and visible
-     * if other parts of the program ever read it. */
+
+    bool autoplay_mod_active = false;
+
+    if (cJSON_IsObject(mods)) {
+        const cJSON *mods_str = cJSON_GetObjectItem(mods, "str");
+        if (cJSON_IsString(mods_str) && mods_str->valuestring) {
+            const char *s = mods_str->valuestring;
+
+            /* Defensive parsing:
+            Accept both concatenated pairs ("HDDTAP")
+            and comma-separated ("HD,DT,AP") formats. */
+
+            size_t len = strlen(s);
+
+            for (size_t i = 0; i < len; ) {
+
+                /* Skip commas or whitespace */
+                if (s[i] == ',' || s[i] == ' ') {
+                    i++;
+                    continue;
+                }
+
+                /* Ensure at least two chars remain */
+                if (i + 1 >= len)
+                    break;
+
+                char a = s[i];
+                char b = s[i + 1];
+
+                if ((a == 'A' && b == 'T') ||
+                    ((a == 'C' && b == 'N') ||
+                    (a == 'A' && b == 'P'))) {
+                    autoplay_mod_active = true;
+                    break;
+                }
+
+                /* Advance by 2 if contiguous, else 1 if unknown */
+                if (i + 2 < len && s[i + 2] != ',' && s[i + 2] != ' ')
+                    i += 2;
+                else
+                    i += 3;  /* skip comma as well */
+            }
+        }
+    }
+
     pthread_mutex_lock(&state_mutex);
 
     int prev_state = last_menu_state;
 
-    /* If we move from results (7) -> gameplay (2), treat as replay playback. */
     if (prev_state == 7 && current_state == 2) {
         if (!replay_session) {
             replay_session = true;
         }
     }
 
-    /* If we're not in gameplay anymore, clear replay flag. */
     if (current_state != 2 && replay_session) {
         replay_session = false;
     }
 
-    /* update the remembered menu state for the next poll */
     last_menu_state = current_state;
 
-    /* compute result while still under lock to avoid races */
     bool enable = (current_state == 2 &&
                    current_mode == 0 &&
-                   !replay_session);
+                   !replay_session &&
+                   !autoplay_mod_active);
 
     pthread_mutex_unlock(&state_mutex);
 
