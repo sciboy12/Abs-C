@@ -26,6 +26,14 @@ static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool running = false;
 static bool last_abs_state = false;
 
+/* Track previous menu state and whether we're currently treating the session as a replay.
+ * Protected by state_mutex. */
+static int last_menu_state = -1;
+static bool replay_session = false;
+
+/* callback the caller may register to be notified on absolute-state changes */
+static void (*state_change_cb)(bool) = NULL;
+
 // ---------------- JSON LOGIC ----------------
 static bool should_enable_absolute(const cJSON *root) {
     if (!root) return false;
@@ -39,7 +47,38 @@ static bool should_enable_absolute(const cJSON *root) {
     if (!cJSON_IsNumber(state) || !cJSON_IsNumber(mode))
         return false;
 
-    return state->valueint == 2 && mode->valueint == 0;
+    int current_state = state->valueint;
+    int current_mode  = mode->valueint;
+
+    /* Update transition state under mutex so it's thread-safe and visible
+     * if other parts of the program ever read it. */
+    pthread_mutex_lock(&state_mutex);
+
+    int prev_state = last_menu_state;
+
+    /* If we move from results (7) -> gameplay (2), treat as replay playback. */
+    if (prev_state == 7 && current_state == 2) {
+        if (!replay_session) {
+            replay_session = true;
+        }
+    }
+
+    /* If we're not in gameplay anymore, clear replay flag. */
+    if (current_state != 2 && replay_session) {
+        replay_session = false;
+    }
+
+    /* update the remembered menu state for the next poll */
+    last_menu_state = current_state;
+
+    /* compute result while still under lock to avoid races */
+    bool enable = (current_state == 2 &&
+                   current_mode == 0 &&
+                   !replay_session);
+
+    pthread_mutex_unlock(&state_mutex);
+
+    return enable;
 }
 
 // ---------------- CURL CALLBACK ----------------
@@ -96,9 +135,20 @@ static void *poll_thread_func(void *arg) {
             if (root) {
                 bool current = should_enable_absolute(root);
 
+                /* Update shared state and detect transitions. */
                 pthread_mutex_lock(&state_mutex);
-                last_abs_state = current;
+                bool prev = last_abs_state;
+                if (prev != current) {
+                    last_abs_state = current;
+                }
+                /* copy callback pointer under lock so it won't change under us */
+                void (*cb_copy)(bool) = state_change_cb;
                 pthread_mutex_unlock(&state_mutex);
+
+                if (prev != current) {
+                    /* call the callback (outside lock) if registered */
+                    if (cb_copy) cb_copy(current);
+                }
 
                 cJSON_Delete(root);
             }
@@ -117,6 +167,14 @@ static void *poll_thread_func(void *arg) {
     return NULL;
 }
 
+/* Register a callback that will be called whenever the absolute state changes.
+ * The callback is called from the poll thread (not the main thread). */
+void tosu_set_state_change_callback(void (*cb)(bool)) {
+    pthread_mutex_lock(&state_mutex);
+    state_change_cb = cb;
+    pthread_mutex_unlock(&state_mutex);
+}
+
 // ---------------- PUBLIC API ----------------
 void tosu_init(void) {
     if (running) return;
@@ -125,6 +183,8 @@ void tosu_init(void) {
 
     pthread_mutex_lock(&state_mutex);
     last_abs_state = false;
+    last_menu_state = -1;
+    replay_session = false;
     pthread_mutex_unlock(&state_mutex);
 
     running = true;
