@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
+#include <stdatomic.h>
 #include <curl/curl.h>
 #include <cjson/cJSON.h>
 
@@ -23,7 +25,8 @@ struct curl_buf {
 static pthread_t poll_thread;
 static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static bool running = false;
+static _Atomic bool running = false;
+static bool thread_started = false;
 static bool last_abs_state = false;
 
 /* Track previous menu state and whether we're currently treating the session as a replay.
@@ -147,29 +150,62 @@ static void *poll_thread_func(void *arg) {
 
     if (!multi || !easy) {
         fprintf(stderr, "[tosu] curl init failed\n");
+        if (easy) curl_easy_cleanup(easy);
+        if (multi) curl_multi_cleanup(multi);
         return NULL;
     }
 
-    curl_easy_setopt(easy, CURLOPT_URL, TOSU_URL);
-    curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 500);
-    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    if (curl_easy_setopt(easy, CURLOPT_URL, TOSU_URL) != CURLE_OK ||
+        curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 500L) != CURLE_OK ||
+        curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK ||
+        curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http") != CURLE_OK ||
+        curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http") != CURLE_OK ||
+        curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, curl_write_cb) != CURLE_OK) {
+        fprintf(stderr, "[tosu] curl_easy_setopt failed\n");
+        curl_easy_cleanup(easy);
+        curl_multi_cleanup(multi);
+        return NULL;
+    }
 
-    while (running) {
+    while (atomic_load_explicit(&running, memory_order_acquire)) {
         struct curl_buf buf = {0};
 
-        curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buf);
-        curl_multi_add_handle(multi, easy);
-
-        int still_running = 0;
-        curl_multi_perform(multi, &still_running);
-
-        while (still_running && running) {
-            curl_multi_poll(multi, NULL, 0, 100, NULL);
-            curl_multi_perform(multi, &still_running);
+        if (curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buf) != CURLE_OK) {
+            fprintf(stderr, "[tosu] failed to set WRITEDATA\n");
+            break;
+        }
+        CURLMcode mrc = curl_multi_add_handle(multi, easy);
+        if (mrc != CURLM_OK) {
+            fprintf(stderr, "[tosu] curl_multi_add_handle failed: %s\n", curl_multi_strerror(mrc));
+            break;
         }
 
-        curl_multi_remove_handle(multi, easy);
+        int still_running = 0;
+        mrc = curl_multi_perform(multi, &still_running);
+        if (mrc != CURLM_OK) {
+            fprintf(stderr, "[tosu] curl_multi_perform failed: %s\n", curl_multi_strerror(mrc));
+            curl_multi_remove_handle(multi, easy);
+            break;
+        }
+
+        while (still_running && atomic_load_explicit(&running, memory_order_acquire)) {
+            mrc = curl_multi_poll(multi, NULL, 0, 100, NULL);
+            if (mrc != CURLM_OK) {
+                fprintf(stderr, "[tosu] curl_multi_poll failed: %s\n", curl_multi_strerror(mrc));
+                break;
+            }
+            mrc = curl_multi_perform(multi, &still_running);
+            if (mrc != CURLM_OK) {
+                fprintf(stderr, "[tosu] curl_multi_perform failed: %s\n", curl_multi_strerror(mrc));
+                break;
+            }
+        }
+
+        mrc = curl_multi_remove_handle(multi, easy);
+        if (mrc != CURLM_OK) {
+            fprintf(stderr, "[tosu] curl_multi_remove_handle failed: %s\n", curl_multi_strerror(mrc));
+            break;
+        }
 
         if (buf.data) {
             cJSON *root = cJSON_Parse(buf.data);
@@ -199,9 +235,13 @@ static void *poll_thread_func(void *arg) {
                 .tv_sec = POLL_INTERVAL_MS / 1000,
                 .tv_nsec = (POLL_INTERVAL_MS % 1000) * 1000000L
             };
-            nanosleep(&ts, NULL);
+            if (nanosleep(&ts, NULL) < 0 && errno != EINTR) {
+                perror("[tosu] nanosleep");
+                break;
+            }
 
     }
+    atomic_store_explicit(&running, false, memory_order_release);
 
     curl_easy_cleanup(easy);
     curl_multi_cleanup(multi);
@@ -218,25 +258,50 @@ void tosu_set_state_change_callback(void (*cb)(bool)) {
 
 // ---------------- PUBLIC API ----------------
 void tosu_init(void) {
-    if (running) return;
-
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-
     pthread_mutex_lock(&state_mutex);
+    bool already_running = atomic_load_explicit(&running, memory_order_acquire);
+    if (already_running || thread_started) {
+        pthread_mutex_unlock(&state_mutex);
+        return;
+    }
     last_abs_state = false;
     last_menu_state = -1;
     replay_session = false;
     pthread_mutex_unlock(&state_mutex);
 
-    running = true;
-    pthread_create(&poll_thread, NULL, poll_thread_func, NULL);
+    CURLcode gc = curl_global_init(CURL_GLOBAL_DEFAULT);
+    if (gc != CURLE_OK) {
+        fprintf(stderr, "[tosu] curl_global_init failed: %s\n", curl_easy_strerror(gc));
+        return;
+    }
+
+    atomic_store_explicit(&running, true, memory_order_release);
+    int rc = pthread_create(&poll_thread, NULL, poll_thread_func, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "[tosu] pthread_create failed: %d\n", rc);
+        atomic_store_explicit(&running, false, memory_order_release);
+        curl_global_cleanup();
+        return;
+    }
+
+    pthread_mutex_lock(&state_mutex);
+    thread_started = true;
+    pthread_mutex_unlock(&state_mutex);
 }
 
 void tosu_shutdown(void) {
-    if (!running) return;
+    pthread_mutex_lock(&state_mutex);
+    bool join_needed = thread_started;
+    thread_started = false;
+    pthread_mutex_unlock(&state_mutex);
 
-    running = false;
-    pthread_join(poll_thread, NULL);
+    if (!join_needed) return;
+
+    atomic_store_explicit(&running, false, memory_order_release);
+    int rc = pthread_join(poll_thread, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "[tosu] pthread_join failed: %d\n", rc);
+    }
 
     curl_global_cleanup();
 }
