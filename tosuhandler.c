@@ -11,7 +11,7 @@
 #include <cjson/cJSON.h>
 
 // ---------------- CONFIG ----------------
-#define TOSU_URL "http://localhost:24050/json"
+#define TOSU_URL "http://127.0.0.1:24050/json"
 #define POLL_INTERVAL_MS 500
 // ----------------------------------------
 
@@ -153,6 +153,7 @@ static void *poll_thread_func(void *arg) {
     curl_easy_setopt(easy, CURLOPT_URL, TOSU_URL);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 500);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(easy, CURLOPT_NOPROXY, "*");
     curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, curl_write_cb);
 
     while (running) {

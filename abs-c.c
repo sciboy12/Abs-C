@@ -10,6 +10,7 @@
 #include <string.h>
 #include <ini.h>
 #include <poll.h>
+#include <errno.h>
 #include <sched.h>
 #include <sys/mman.h>
 #include <sys/capability.h>
@@ -362,17 +363,15 @@ int main(int argc, char *argv[]) {
     mlockall(MCL_CURRENT | MCL_FUTURE);
 
     struct pollfd pfd = {.fd=fd, .events=POLLIN};
-    struct input_event ev_buf[64];
-
-
 
     int x = 0, y = 0;
     int x_old = -1, y_old = -1;
-    bool active;
+    bool active = false;
     bool grabbed = false;
 
     if (config.enable_tosu == true) {
         tosu_init();
+        active = tosu_get_absolute_state();
     }
     else {
         printf("Tosu integration is disabled.\n");
@@ -397,7 +396,23 @@ int main(int argc, char *argv[]) {
         set_grab(fd, &grabbed, active);
 
         if (active == true) {
-            if (poll(&pfd, 1, -1) <= 0)
+            int poll_rc = poll(&pfd, 1, -1);
+            if (poll_rc == -1) {
+                if (errno == EINTR) {
+                    if (stop) break;
+                    continue;
+                }
+                perror("poll");
+                break;
+            }
+            if (poll_rc == 0)
+                continue;
+
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                fprintf(stderr, "poll: fatal revents=0x%x\n", pfd.revents);
+                break;
+            }
+            if (!(pfd.revents & POLLIN))
                 continue;
 
             struct input_event ev;
