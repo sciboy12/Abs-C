@@ -313,18 +313,31 @@ int main(int argc, char *argv[]) {
     if (ndevs < 0) { perror("scandir"); goto cleanup; }
 
     char path[256], name[256];
+    struct stat st;
     bool found = false, usable = false;
 
     for (int i = 0; i < ndevs && !found; i++) {
         if (strcmp(namelist[i]->d_name, ".") == 0 || strcmp(namelist[i]->d_name, "..") == 0) {
             continue;
         }
+
+        if (strncmp(namelist[i]->d_name, "event", 5) != 0) {
+            continue;
+        }
+
         snprintf(path, sizeof(path), "/dev/input/%s", namelist[i]->d_name);
+
+        if (stat(path, &st) < 0) {
+            continue;
+        }
+        if (!S_ISCHR(st.st_mode)) {
+            continue;
+        }
+
         int devfd = open(path, O_RDONLY);
         if (devfd < 0) continue;
 
         if (ioctl(devfd, EVIOCGNAME(sizeof(name)), name) < 0) {
-            perror("ioctl EVIOCGNAME");
             close(devfd);
             continue;
         }
