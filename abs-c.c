@@ -16,28 +16,27 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <pwd.h>
+#include <errno.h>
 #include "tosuhandler.h"
 
 #define INACTIVE_SLEEP_MS 100  // long sleep to save CPU
 
 volatile sig_atomic_t stop = 0;
-int tab_fd;
+int tab_fd = -1;
 int fd = -1;
 
-void quit(int sig) {
+static void quit(int sig) {
     (void)sig;
-    printf("\nExiting.\n");
     stop = 1;
-    if (fd > 0) ioctl(fd, EVIOCGRAB, 0);
-    if (tab_fd) ioctl(tab_fd, UI_DEV_DESTROY);
-    tosu_shutdown();
-    exit(0);
 }
 
 static inline void set_grab(int fd, bool *grabbed, bool want) {
     if (*grabbed == want) return;
-    if (ioctl(fd, EVIOCGRAB, want) == 0)
+    if (ioctl(fd, EVIOCGRAB, want) == 0) {
         *grabbed = want;
+    } else {
+        perror("ioctl EVIOCGRAB");
+    }
 }
 
 // Internal helper: returns malloc'd home directory for the real user.
@@ -127,14 +126,21 @@ static int handler(void* user, const char* section, const char* name, const char
 
 int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
-    if (fd < 0) { perror("open /dev/uinput"); exit(EXIT_FAILURE); }
+    if (fd < 0) {
+        perror("open /dev/uinput");
+        return -1;
+    }
 
-    ioctl(fd, UI_SET_EVBIT, EV_KEY);
-    ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
-    ioctl(fd, UI_SET_EVBIT, EV_ABS);
-    ioctl(fd, UI_SET_ABSBIT, ABS_X);
-    ioctl(fd, UI_SET_ABSBIT, ABS_Y);
-    ioctl(fd, UI_SET_EVBIT, EV_SYN);
+    if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
+        ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
+        ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0 ||
+        ioctl(fd, UI_SET_ABSBIT, ABS_X) < 0 ||
+        ioctl(fd, UI_SET_ABSBIT, ABS_Y) < 0 ||
+        ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) {
+        perror("ioctl uinput setup");
+        close(fd);
+        return -1;
+    }
 
     struct uinput_user_dev uidev = {0};
     snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "Abs-C Virtual Tablet");
@@ -147,8 +153,17 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     uidev.absmin[ABS_Y] = tmin_y;
     uidev.absmax[ABS_Y] = tmax_y;
 
-    write(fd, &uidev, sizeof(uidev));
-    ioctl(fd, UI_DEV_CREATE);
+    ssize_t wrote = write(fd, &uidev, sizeof(uidev));
+    if (wrote != (ssize_t)sizeof(uidev)) {
+        perror("write uinput_user_dev");
+        close(fd);
+        return -1;
+    }
+    if (ioctl(fd, UI_DEV_CREATE) < 0) {
+        perror("ioctl UI_DEV_CREATE");
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 
@@ -212,7 +227,7 @@ void list_devices() {
     free(namelist);
 }
 
-static inline void emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty) {
+static inline bool emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty) {
     struct input_event ev[3];
     int n = 0;
 
@@ -239,13 +254,27 @@ static inline void emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty) {
         .value = 0
     };
 
-    write(tab_fd, ev, n * sizeof(struct input_event));
+    ssize_t wrote = write(tab_fd, ev, n * sizeof(struct input_event));
+    if (wrote != (ssize_t)(n * sizeof(struct input_event))) {
+        perror("write EV_ABS");
+        return false;
+    }
+    return true;
 }
 
 
 int main(int argc, char *argv[]) {
-    signal(SIGINT, quit);
-    signal(SIGTERM, quit);
+    int exit_code = EXIT_FAILURE;
+    bool grabbed = false;
+    bool tosu_started = false;
+
+    struct sigaction sa = {0};
+    sa.sa_handler = quit;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGINT, &sa, NULL) < 0 || sigaction(SIGTERM, &sa, NULL) < 0) {
+        perror("sigaction");
+        goto cleanup;
+    }
 
     check_caps(argv[0]);
 
@@ -274,24 +303,32 @@ int main(int argc, char *argv[]) {
 
     const char *dev_override = NULL;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { print_help(argv[0]); return 0; }
-        else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--list")) { list_devices(); return 0; }
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { print_help(argv[0]); exit_code = EXIT_SUCCESS; goto cleanup; }
+        else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--list")) { list_devices(); exit_code = EXIT_SUCCESS; goto cleanup; }
         else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "--device")) && i+1<argc) dev_override = argv[++i];
     }
 
     struct dirent **namelist;
     int ndevs = scandir("/dev/input/", &namelist, NULL, alphasort);
-    if (ndevs < 0) { perror("scandir"); exit(EXIT_FAILURE); }
+    if (ndevs < 0) { perror("scandir"); goto cleanup; }
 
     char path[256], name[256];
     bool found = false, usable = false;
 
     for (int i = 0; i < ndevs && !found; i++) {
+        if (strcmp(namelist[i]->d_name, ".") == 0 || strcmp(namelist[i]->d_name, "..") == 0) {
+            continue;
+        }
         snprintf(path, sizeof(path), "/dev/input/%s", namelist[i]->d_name);
         int devfd = open(path, O_RDONLY);
         if (devfd < 0) continue;
 
-        ioctl(devfd, EVIOCGNAME(sizeof(name)), name);
+        if (ioctl(devfd, EVIOCGNAME(sizeof(name)), name) < 0) {
+            perror("ioctl EVIOCGNAME");
+            close(devfd);
+            continue;
+        }
+        name[sizeof(name) - 1] = '\0';
 
         if (dev_override) {
             if (dev_override[0] == '/' && strcmp(path, dev_override) != 0) { close(devfd); continue; }
@@ -300,13 +337,21 @@ int main(int argc, char *argv[]) {
 
         unsigned long evbits[(EV_MAX + (sizeof(unsigned long)*8) - 1) /
         (sizeof(unsigned long)*8)] = {0};
-        ioctl(devfd, EVIOCGBIT(0, sizeof(evbits)), evbits);
+        if (ioctl(devfd, EVIOCGBIT(0, sizeof(evbits)), evbits) < 0) {
+            perror("ioctl EVIOCGBIT");
+            close(devfd);
+            continue;
+        }
 
         if (test_bit(EV_ABS, evbits)) {
             unsigned long absbits[(ABS_MAX + (sizeof(unsigned long)*8) - 1) /
             (sizeof(unsigned long)*8)] = {0};
 
-            ioctl(devfd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits);
+            if (ioctl(devfd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) < 0) {
+                perror("ioctl EVIOCGBIT(EV_ABS)");
+                close(devfd);
+                continue;
+            }
 
             bool has_x = test_bit(ABS_X, absbits);
             bool has_y = test_bit(ABS_Y, absbits);
@@ -315,23 +360,31 @@ int main(int argc, char *argv[]) {
                 fd = devfd;
                 found = usable = true;
                 printf("Using device %s (%s)\n", path, name);
+                devfd = -1;
             }
         }
 
-        else if (dev_override) { found = true; usable = false; close(devfd); }
-        else close(devfd);
+        else if (dev_override) { found = true; usable = false; }
+
+        if (devfd >= 0) close(devfd);
     }
 
     for (int i = 0; i < ndevs; i++) free(namelist[i]);
     free(namelist);
 
-    if (!found) { fprintf(stderr, dev_override ? "No device matching '%s'\n" : "No suitable input device found.\n", dev_override); exit(EXIT_FAILURE); }
-    if (!usable) { fprintf(stderr, "Device '%s' is not usable (requires EV_ABS support)\n", dev_override);  exit(EXIT_FAILURE); }
+    if (!found) { fprintf(stderr, dev_override ? "No device matching '%s'\n" : "No suitable input device found.\n", dev_override); goto cleanup; }
+    if (!usable) { fprintf(stderr, "Device '%s' is not usable (requires EV_ABS support)\n", dev_override); goto cleanup; }
 
     struct input_absinfo absinfo;
-    ioctl(fd, EVIOCGABS(ABS_X), &absinfo);
+    if (ioctl(fd, EVIOCGABS(ABS_X), &absinfo) < 0) {
+        perror("ioctl EVIOCGABS(ABS_X)");
+        goto cleanup;
+    }
     int tmin_x = absinfo.minimum, tmax_x = absinfo.maximum;
-    ioctl(fd, EVIOCGABS(ABS_Y), &absinfo);
+    if (ioctl(fd, EVIOCGABS(ABS_Y), &absinfo) < 0) {
+        perror("ioctl EVIOCGABS(ABS_Y)");
+        goto cleanup;
+    }
     int tmin_y = absinfo.minimum, tmax_y = absinfo.maximum;
 
     double sr = (double)config.display_width / config.display_height;
@@ -356,10 +409,15 @@ int main(int argc, char *argv[]) {
     int new_tmax_y = (int)(y_center + y_half_range);
 
     tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
+    if (tab_fd < 0) goto cleanup;
 
     struct sched_param param = {.sched_priority=20};
-    sched_setscheduler(0, SCHED_FIFO, &param);
-    mlockall(MCL_CURRENT | MCL_FUTURE);
+    if (sched_setscheduler(0, SCHED_FIFO, &param) < 0) {
+        perror("sched_setscheduler");
+    }
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0) {
+        perror("mlockall");
+    }
 
     struct pollfd pfd = {.fd=fd, .events=POLLIN};
     struct input_event ev_buf[64];
@@ -369,10 +427,10 @@ int main(int argc, char *argv[]) {
     int x = 0, y = 0;
     int x_old = -1, y_old = -1;
     bool active;
-    bool grabbed = false;
 
     if (config.enable_tosu == true) {
         tosu_init();
+        tosu_started = true;
     }
     else {
         printf("Tosu integration is disabled.\n");
@@ -399,9 +457,19 @@ int main(int argc, char *argv[]) {
         if (active == true) {
             if (poll(&pfd, 1, -1) <= 0)
                 continue;
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                fprintf(stderr, "poll error on input device\n");
+                break;
+            }
 
             struct input_event ev;
-            if (read(fd, &ev, sizeof(ev)) != sizeof(ev))
+            ssize_t rd = read(fd, &ev, sizeof(ev));
+            if (rd < 0) {
+                if (errno == EINTR && stop) break;
+                perror("read input_event");
+                continue;
+            }
+            if (rd != sizeof(ev))
                 continue;
 
             bool x_dirty = false;
@@ -418,7 +486,9 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (x_dirty || y_dirty) {
-                    emit_abs_delta(x, y, x_dirty, y_dirty);
+                    if (!emit_abs_delta(x, y, x_dirty, y_dirty)) {
+                        break;
+                    }
                     x_old = x;
                     y_old = y;
                 }
@@ -432,7 +502,11 @@ int main(int argc, char *argv[]) {
                     { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
                     { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
                 };
-                write(tab_fd, btn, sizeof(btn));
+                ssize_t bw = write(tab_fd, btn, sizeof(btn));
+                if (bw != (ssize_t)sizeof(btn)) {
+                    perror("write BTN_LEFT");
+                    break;
+                }
             }
         }
         else {
@@ -443,5 +517,26 @@ int main(int argc, char *argv[]) {
             nanosleep(&ts, NULL);
         }
     }
-    return 0;
+    exit_code = EXIT_SUCCESS;
+
+cleanup:
+    if (grabbed && fd >= 0 && ioctl(fd, EVIOCGRAB, 0) < 0) {
+        perror("ioctl EVIOCGRAB release");
+    }
+    if (tosu_started) {
+        tosu_shutdown();
+    }
+    if (tab_fd >= 0) {
+        if (ioctl(tab_fd, UI_DEV_DESTROY) < 0) {
+            perror("ioctl UI_DEV_DESTROY");
+        }
+        close(tab_fd);
+        tab_fd = -1;
+    }
+    if (fd >= 0) {
+        close(fd);
+        fd = -1;
+    }
+    fprintf(stderr, "Exiting with status %d\n", exit_code);
+    return exit_code;
 }
