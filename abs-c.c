@@ -126,15 +126,20 @@ static int handler(void* user, const char* section, const char* name, const char
     return 1;
 }
 
-int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
+int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y, int pmin, int pmax) {
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
     if (fd < 0) { perror("open /dev/uinput"); exit(EXIT_FAILURE); }
 
     ioctl(fd, UI_SET_EVBIT, EV_KEY);
     ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
+    ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
+    ioctl(fd, UI_SET_KEYBIT, BTN_TOOL_PEN);
+    ioctl(fd, UI_SET_KEYBIT, BTN_STYLUS);
     ioctl(fd, UI_SET_EVBIT, EV_ABS);
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
+    ioctl(fd, UI_SET_ABSBIT, ABS_PRESSURE);
+    ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
     ioctl(fd, UI_SET_EVBIT, EV_SYN);
 
     struct uinput_user_dev uidev = {0};
@@ -147,6 +152,8 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     uidev.absmax[ABS_X] = tmax_x;
     uidev.absmin[ABS_Y] = tmin_y;
     uidev.absmax[ABS_Y] = tmax_y;
+    uidev.absmin[ABS_PRESSURE] = pmin;
+    uidev.absmax[ABS_PRESSURE] = pmax;
 
     write(fd, &uidev, sizeof(uidev));
     ioctl(fd, UI_DEV_CREATE);
@@ -213,8 +220,9 @@ void list_devices() {
     free(namelist);
 }
 
-static inline void emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty) {
-    struct input_event ev[3];
+static inline void emit_tablet_delta(int x, int y, int pressure,
+                                     bool x_dirty, bool y_dirty, bool p_dirty) {
+    struct input_event ev[4];
     int n = 0;
 
     if (x_dirty) {
@@ -230,6 +238,14 @@ static inline void emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty) {
             .type  = EV_ABS,
             .code  = ABS_Y,
             .value = y
+        };
+    }
+
+    if (p_dirty) {
+        ev[n++] = (struct input_event){
+            .type  = EV_ABS,
+            .code  = ABS_PRESSURE,
+            .value = pressure
         };
     }
 
@@ -335,6 +351,14 @@ int main(int argc, char *argv[]) {
     ioctl(fd, EVIOCGABS(ABS_Y), &absinfo);
     int tmin_y = absinfo.minimum, tmax_y = absinfo.maximum;
 
+    int pmin = 0, pmax = 1023;
+    bool has_pressure = false;
+    if (ioctl(fd, EVIOCGABS(ABS_PRESSURE), &absinfo) == 0) {
+        pmin = absinfo.minimum;
+        pmax = absinfo.maximum;
+        has_pressure = true;
+    }
+
     double sr = (double)config.display_width / config.display_height;
     float x_center = (tmin_x + tmax_x)/2.0f + config.x_offset_pct*0.01f*(tmax_x-tmin_x)/2.0f;
     float y_center = (tmin_y + tmax_y)/2.0f + config.y_offset_pct*0.01f*(tmax_y-tmin_y)/2.0f;
@@ -356,7 +380,7 @@ int main(int argc, char *argv[]) {
     int new_tmin_y = (int)(y_center - y_half_range);
     int new_tmax_y = (int)(y_center + y_half_range);
 
-    tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y);
+    tab_fd = init_uinput(new_tmin_x, new_tmax_x, new_tmin_y, new_tmax_y, pmin, pmax);
 
     struct sched_param param = {.sched_priority=20};
     sched_setscheduler(0, SCHED_FIFO, &param);
@@ -364,8 +388,11 @@ int main(int argc, char *argv[]) {
 
     struct pollfd pfd = {.fd=fd, .events=POLLIN};
 
-    int x = 0, y = 0;
-    int x_old = -1, y_old = -1;
+    int x = 0, y = 0, pressure = pmin;
+    int x_old = -1, y_old = -1, pressure_old = -1;
+    int pressure_hover = pmin > 0 ? pmin : 1;
+    bool pen_in_range = false;
+    bool touching = false;
     bool active = false;
     bool grabbed = false;
 
@@ -382,6 +409,7 @@ int main(int argc, char *argv[]) {
     clock_gettime(CLOCK_MONOTONIC, &ts_last);
 
     printf("Press Ctrl-C to quit\n");
+    bool was_active = active;
     while (!stop) {
         struct timespec ts_now;
         clock_gettime(CLOCK_MONOTONIC, &ts_now);
@@ -394,6 +422,22 @@ int main(int argc, char *argv[]) {
         }
         // Update device grab based on state
         set_grab(fd, &grabbed, active);
+
+        if (was_active && !active) {
+            struct input_event out_of_range[4] = {
+                { .type = EV_KEY, .code = BTN_LEFT, .value = 0 },
+                { .type = EV_KEY, .code = BTN_TOUCH, .value = 0 },
+                { .type = EV_KEY, .code = BTN_TOOL_PEN, .value = 0 },
+                { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+            };
+            write(tab_fd, out_of_range, sizeof(out_of_range));
+            pressure = pmin;
+            emit_tablet_delta(x, y, pressure, false, false, true);
+            pressure_old = pressure;
+            touching = false;
+            pen_in_range = false;
+        }
+        was_active = active;
 
         if (active == true) {
             int poll_rc = poll(&pfd, 1, -1);
@@ -421,6 +465,7 @@ int main(int argc, char *argv[]) {
 
             bool x_dirty = false;
             bool y_dirty = false;
+            bool p_dirty = false;
 
             if (ev.type == EV_ABS) {
                 if (ev.code == ABS_X && ev.value != x_old) {
@@ -431,23 +476,57 @@ int main(int argc, char *argv[]) {
                     y = ev.value;
                     y_dirty = true;
                 }
+                else if (ev.code == ABS_PRESSURE && has_pressure && ev.value != pressure_old) {
+                    pressure = ev.value;
+                    p_dirty = true;
+                }
 
-                if (x_dirty || y_dirty) {
-                    emit_abs_delta(x, y, x_dirty, y_dirty);
+                if ((x_dirty || y_dirty || p_dirty) && !pen_in_range) {
+                    struct input_event pen_ev[2] = {
+                        { .type = EV_KEY, .code = BTN_TOOL_PEN, .value = 1 },
+                        { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+                    };
+                    write(tab_fd, pen_ev, sizeof(pen_ev));
+                    pen_in_range = true;
+                }
+
+                if (x_dirty || y_dirty || p_dirty) {
+                    emit_tablet_delta(x, y, pressure, x_dirty, y_dirty, p_dirty);
                     x_old = x;
                     y_old = y;
+                    pressure_old = pressure;
                 }
             }
 
             if (config.enable_buttons &&
                 ev.type == EV_KEY &&
                 ev.code == BTN_LEFT) {
+                touching = ev.value != 0;
+                if (!has_pressure) {
+                    pressure = touching ? pressure_hover : pmin;
+                    if (pressure != pressure_old) {
+                        emit_tablet_delta(x, y, pressure, false, false, true);
+                        pressure_old = pressure;
+                    }
+                }
 
-                struct input_event btn[2] = {
+                if (touching && !pen_in_range) {
+                    struct input_event in_range[2] = {
+                        { .type = EV_KEY, .code = BTN_TOOL_PEN, .value = 1 },
+                        { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+                    };
+                    write(tab_fd, in_range, sizeof(in_range));
+                    pen_in_range = true;
+                }
+
+                struct input_event btn[4] = {
                     { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
+                    { .type = EV_KEY, .code = BTN_TOUCH, .value = ev.value },
+                    { .type = EV_KEY, .code = BTN_TOOL_PEN, .value = touching ? 1 : 0 },
                     { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
                 };
                 write(tab_fd, btn, sizeof(btn));
+                pen_in_range = touching;
             }
         }
         else {
