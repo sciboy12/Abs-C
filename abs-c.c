@@ -133,9 +133,13 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
 
     if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
         ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
+        ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH) < 0 ||
+        ioctl(fd, UI_SET_KEYBIT, BTN_TOOL_PEN) < 0 ||
         ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0 ||
         ioctl(fd, UI_SET_ABSBIT, ABS_X) < 0 ||
         ioctl(fd, UI_SET_ABSBIT, ABS_Y) < 0 ||
+        ioctl(fd, UI_SET_ABSBIT, ABS_PRESSURE) < 0 ||
+        ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT) < 0 ||
         ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) {
         perror("ioctl uinput setup");
         close(fd);
@@ -152,6 +156,8 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     uidev.absmax[ABS_X] = tmax_x;
     uidev.absmin[ABS_Y] = tmin_y;
     uidev.absmax[ABS_Y] = tmax_y;
+    uidev.absmin[ABS_PRESSURE] = 0;
+    uidev.absmax[ABS_PRESSURE] = 8191;
 
     ssize_t wrote = write(fd, &uidev, sizeof(uidev));
     if (wrote != (ssize_t)sizeof(uidev)) {
@@ -165,6 +171,20 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
         return -1;
     }
     return fd;
+}
+
+static inline bool emit_pen_tool_state(void) {
+    struct input_event ev[2] = {
+        { .type = EV_KEY, .code = BTN_TOOL_PEN, .value = 1 },
+        { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
+    };
+
+    ssize_t wrote = write(tab_fd, ev, sizeof(ev));
+    if (wrote != (ssize_t)sizeof(ev)) {
+        perror("write BTN_TOOL_PEN");
+        return false;
+    }
+    return true;
 }
 
 static inline int test_bit(int bit, const unsigned long *array) {
@@ -438,7 +458,11 @@ int main(int argc, char *argv[]) {
 
 
     int x = 0, y = 0;
-    int x_old = -1, y_old = -1;
+    int pressure = 0;
+    bool is_down = false;
+    bool touch_down = false;
+    bool got_x = false;
+    bool got_y = false;
     bool active;
 
     if (config.enable_tosu == true) {
@@ -468,6 +492,10 @@ int main(int argc, char *argv[]) {
         set_grab(fd, &grabbed, active);
 
         if (active == true) {
+            if (!emit_pen_tool_state()) {
+                break;
+            }
+
             if (poll(&pfd, 1, -1) <= 0)
                 continue;
             if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
@@ -485,39 +513,45 @@ int main(int argc, char *argv[]) {
             if (rd != sizeof(ev))
                 continue;
 
-            bool x_dirty = false;
-            bool y_dirty = false;
-
             if (ev.type == EV_ABS) {
-                if (ev.code == ABS_X && ev.value != x_old) {
+                if (ev.code == ABS_X) {
                     x = ev.value;
-                    x_dirty = true;
+                    got_x = true;
                 }
-                else if (ev.code == ABS_Y && ev.value != y_old) {
+                else if (ev.code == ABS_Y) {
                     y = ev.value;
-                    y_dirty = true;
+                    got_y = true;
                 }
-
-                if (x_dirty || y_dirty) {
-                    if (!emit_abs_delta(x, y, x_dirty, y_dirty)) {
+            }
+            else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                if (got_x && got_y) {
+                    if (!emit_abs_delta(x, y, true, true)) {
                         break;
                     }
-                    x_old = x;
-                    y_old = y;
+                    got_x = false;
+                    got_y = false;
                 }
             }
 
-            if (config.enable_buttons &&
-                ev.type == EV_KEY &&
-                ev.code == BTN_LEFT) {
+            if (config.enable_buttons && ev.type == EV_KEY &&
+                (ev.code == BTN_LEFT || ev.code == BTN_TOUCH)) {
+                touch_down = (ev.value != 0);
+                is_down = touch_down;
+                if (touch_down) {
+                    pressure = 8191;
+                } else {
+                    pressure = 0;
+                }
+                (void)pressure;
 
-                struct input_event btn[2] = {
-                    { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
+                struct input_event btn[3] = {
+                    { .type = EV_KEY, .code = BTN_LEFT, .value = (ev.code == BTN_LEFT) ? ev.value : (touch_down ? 1 : 0) },
+                    { .type = EV_KEY, .code = BTN_TOUCH, .value = touch_down ? 1 : 0 },
                     { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
                 };
                 ssize_t bw = write(tab_fd, btn, sizeof(btn));
                 if (bw != (ssize_t)sizeof(btn)) {
-                    perror("write BTN_LEFT");
+                    perror("write BTN_LEFT/BTN_TOUCH");
                     break;
                 }
             }
