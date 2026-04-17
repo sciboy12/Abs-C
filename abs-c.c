@@ -460,6 +460,7 @@ int main(int argc, char *argv[]) {
     int x = 0, y = 0;
     int pressure = 0;
     bool is_down = false;
+    bool touch_down = false;
     bool got_x = false;
     bool got_y = false;
     bool active;
@@ -532,11 +533,11 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            if (config.enable_buttons &&
-                ev.type == EV_KEY &&
-                ev.code == BTN_LEFT) {
-                is_down = (ev.value != 0);
-                if (is_down) {
+            if (config.enable_buttons && ev.type == EV_KEY &&
+                (ev.code == BTN_LEFT || ev.code == BTN_TOUCH)) {
+                touch_down = (ev.value != 0);
+                is_down = touch_down;
+                if (touch_down) {
                     pressure = 8191;
                 } else {
                     pressure = 0;
@@ -544,8 +545,8 @@ int main(int argc, char *argv[]) {
                 (void)pressure;
 
                 struct input_event btn[3] = {
-                    { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
-                    { .type = EV_KEY, .code = BTN_TOUCH, .value = is_down ? 1 : 0 },
+                    { .type = EV_KEY, .code = BTN_LEFT, .value = (ev.code == BTN_LEFT) ? ev.value : (touch_down ? 1 : 0) },
+                    { .type = EV_KEY, .code = BTN_TOUCH, .value = touch_down ? 1 : 0 },
                     { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
                 };
                 ssize_t bw = write(tab_fd, btn, sizeof(btn));
