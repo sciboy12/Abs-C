@@ -45,8 +45,6 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 #### Input options
 
-`enable_buttons`: Enable Left Click on touchpads with a physical LMB
-
 `enable_tosu`: Enable [Tosu](https://github.com/tosuapp/tosu)/[gosumemory](https://github.com/l3lackShark/gosumemory) integration, for automatically toggling absolute mode depending on gameplay state
 
 ## Launch options
