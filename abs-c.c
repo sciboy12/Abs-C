@@ -212,6 +212,17 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
             close(fd);
             return -1;
         }
+        struct input_event ev = {0};
+
+        ev.type = EV_KEY;
+        ev.code = BTN_TOOL_PEN;
+        ev.value = 1;
+        write(fd, &ev, sizeof(ev));
+
+        ev.type = EV_SYN;
+        ev.code = SYN_REPORT;
+        ev.value = 0;
+        write(fd, &ev, sizeof(ev));
 
         return fd;
 }
@@ -340,7 +351,7 @@ int main(int argc, char *argv[]) {
 
     char *config_path = get_abs_c_config_path();
     if (!config_path) {
-        fprintf(stderr, "Couldn't find the config file path. Using default settings.\n");
+    fprintf(stderr, "Couldn't find the config file path. Using default settings.\n");
     }
     else {
         printf("Loading config from %s\n", config_path);
@@ -483,86 +494,106 @@ int main(int argc, char *argv[]) {
     struct pollfd pfd = {.fd=fd, .events=POLLIN};
     struct input_event ev_buf[64];
 
-
-
     int x = 0, y = 0;
     int x_old = -1, y_old = -1;
-    bool active;
+    static int pending_x = 0;
+    static int pending_y = 0;
+    static bool got_x = false;
+    static bool got_y = false;
+    static int last_emitted_x = -1;
+    static int last_emitted_y = -1;
+    bool active = true;
 
-    if (config.enable_tosu == true) {
+    if (config.enable_tosu) {
         tosu_init();
         tosu_started = true;
-    }
-    else {
-        printf("Tosu integration is disabled.\n");
-        active = true;
     }
 
     struct timespec ts_last;
     clock_gettime(CLOCK_MONOTONIC, &ts_last);
 
     printf("Press Ctrl-C to quit\n");
+
     while (!stop) {
         struct timespec ts_now;
         clock_gettime(CLOCK_MONOTONIC, &ts_now);
+
         long dt_ms = (ts_now.tv_sec - ts_last.tv_sec) * 1000 +
-        (ts_now.tv_nsec - ts_last.tv_nsec) / 1000000;
+                    (ts_now.tv_nsec - ts_last.tv_nsec) / 1000000;
 
         if (config.enable_tosu && dt_ms >= 16) { // ~60Hz
             active = tosu_get_absolute_state();
             ts_last = ts_now;
         }
-        // Update device grab based on state
+
         set_grab(fd, &grabbed, active);
 
-        if (active == true) {
-            if (poll(&pfd, 1, -1) <= 0)
-                continue;
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                fprintf(stderr, "poll error on input device\n");
-                break;
+        int poll_ret = poll(&pfd, 1, INACTIVE_SLEEP_MS);   // FIX #1
+        if (poll_ret <= 0) {
+            if (!active) {                                   // FIX #2 (sleep belongs here)
+                struct timespec ts = {
+                    .tv_sec = 0,
+                    .tv_nsec = INACTIVE_SLEEP_MS * 1000000L
+                };
+                nanosleep(&ts, NULL);
             }
-
-            struct input_event ev;
-            ssize_t rd = read(fd, &ev, sizeof(ev));
-            if (rd < 0) {
-                if (errno == EINTR && stop) break;
-                perror("read input_event");
-                continue;
-            }
-            if (rd != sizeof(ev))
-                continue;
-
-            bool x_dirty = false;
-            bool y_dirty = false;
-
-            if (ev.type == EV_ABS) {
-                if (ev.code == ABS_X && ev.value != x_old) {
-                    x = ev.value;
-                    x_dirty = true;
-                }
-                else if (ev.code == ABS_Y && ev.value != y_old) {
-                    y = ev.value;
-                    y_dirty = true;
-                }
-
-                if (x_dirty || y_dirty) {
-                    if (!emit_abs_delta(x, y, x_dirty, y_dirty)) {
-                        break;
-                    }
-                    x_old = x;
-                    y_old = y;
-                }
-            }\
+            continue;
         }
-        else {
-            // Inactive: long sleep to reduce CPU, but wake often enough to detect activation
+
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            fprintf(stderr, "poll error on input device\n");
+            break;
+        }
+
+        struct input_event ev;
+        ssize_t rd = read(fd, &ev, sizeof(ev));
+
+        if (rd < 0) {
+            if (errno == EINTR && stop) break;
+            perror("read input_event");
+            continue;
+        }
+
+        if (rd != sizeof(ev))
+            continue;
+
+        if (ev.type == EV_ABS) {
+            if (ev.code == ABS_X) {
+                pending_x = ev.value;
+                got_x = true;
+            } else if (ev.code == ABS_Y) {
+                pending_y = ev.value;
+                got_y = true;
+            }
+        } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+
+            if (got_x) {
+                x = pending_x;
+                got_x = false;
+            }
+
+            if (got_y) {
+                y = pending_y;
+                got_y = false;
+            }
+
+            if (active && (x != last_emitted_x || y != last_emitted_y)) {
+                emit_abs_delta(x, y, true, true);
+                last_emitted_x = x;
+                last_emitted_y = y;
+            }
+        }
+
+        /* inactive behavior stays inside loop logically tied to state */
+        if (!active) {
             struct timespec ts;
             ts.tv_sec = 0;
             ts.tv_nsec = INACTIVE_SLEEP_MS * 1000000L;
             nanosleep(&ts, NULL);
+            continue;
         }
     }
+
     exit_code = EXIT_SUCCESS;
 
     cleanup:
