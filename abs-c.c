@@ -104,7 +104,6 @@ typedef struct {
     float y_offset_pct;
     float y_scale_pct;
     int keep_ratio;
-    bool enable_buttons;
     bool enable_tosu;
 } configuration;
 
@@ -118,7 +117,6 @@ static int handler(void* user, const char* section, const char* name, const char
     else if (MATCH("area", "y_offset_pct")) cfg->y_offset_pct = atof(value);
     else if (MATCH("area", "y_scale_pct")) cfg->y_scale_pct = atof(value);
     else if (MATCH("area", "keep_ratio")) cfg->keep_ratio = atoi(value);
-    else if (MATCH("input", "enable_buttons")) cfg->enable_buttons = atoi(value);
     else if (MATCH("input", "enable_tosu")) cfg->enable_tosu = atoi(value);
     else return 0;
     return 1;
@@ -132,39 +130,90 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y) {
     }
 
     if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
-        ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
         ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0 ||
-        ioctl(fd, UI_SET_ABSBIT, ABS_X) < 0 ||
-        ioctl(fd, UI_SET_ABSBIT, ABS_Y) < 0 ||
         ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) {
-        perror("ioctl uinput setup");
+        perror("UI_SET_EVBIT");
         close(fd);
         return -1;
-    }
+        }
 
-    struct uinput_user_dev uidev = {0};
-    snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "Abs-C Virtual Tablet");
-    uidev.id.bustype = BUS_USB;
-    uidev.id.vendor  = 0x1234;
-    uidev.id.product = 0xfedc;
-    uidev.id.version = 1;
-    uidev.absmin[ABS_X] = tmin_x;
-    uidev.absmax[ABS_X] = tmax_x;
-    uidev.absmin[ABS_Y] = tmin_y;
-    uidev.absmax[ABS_Y] = tmax_y;
+        ioctl(fd, UI_SET_KEYBIT, BTN_TOOL_PEN);
+        ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
+        ioctl(fd, UI_SET_KEYBIT, BTN_STYLUS);
 
-    ssize_t wrote = write(fd, &uidev, sizeof(uidev));
-    if (wrote != (ssize_t)sizeof(uidev)) {
-        perror("write uinput_user_dev");
-        close(fd);
-        return -1;
-    }
-    if (ioctl(fd, UI_DEV_CREATE) < 0) {
-        perror("ioctl UI_DEV_CREATE");
-        close(fd);
-        return -1;
-    }
-    return fd;
+        ioctl(fd, UI_SET_ABSBIT, ABS_X);
+        ioctl(fd, UI_SET_ABSBIT, ABS_Y);
+        ioctl(fd, UI_SET_ABSBIT, ABS_PRESSURE);
+
+
+        struct uinput_abs_setup abs;
+
+        /* ABS_X */
+        memset(&abs, 0, sizeof(abs));
+        abs.code = ABS_X;
+        abs.absinfo.minimum = tmin_x;
+        abs.absinfo.maximum = tmax_x;
+        abs.absinfo.resolution = 1000;
+        if (ioctl(fd, UI_ABS_SETUP, &abs) < 0) perror("UI_ABS_SETUP ABS_X");
+
+        /* ABS_Y */
+        memset(&abs, 0, sizeof(abs));
+        abs.code = ABS_Y;
+        abs.absinfo.minimum = tmin_y;
+        abs.absinfo.maximum = tmax_y;
+        abs.absinfo.resolution = 1000;
+        if (ioctl(fd, UI_ABS_SETUP, &abs) < 0) perror("UI_ABS_SETUP ABS_Y");
+
+        /* ABS_PRESSURE */
+        memset(&abs, 0, sizeof(abs));
+        abs.code = ABS_PRESSURE;
+        abs.absinfo.minimum = 0;
+        abs.absinfo.maximum = 1024;
+        abs.absinfo.resolution = 1;
+        if (ioctl(fd, UI_ABS_SETUP, &abs) < 0) perror("UI_ABS_SETUP PRESSURE");
+
+        ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+
+        struct uinput_user_dev uidev = {0};
+
+        snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "Abs-C Virtual Tablet");
+
+        uidev.id.bustype = BUS_USB;
+        uidev.id.vendor  = 0x1234;
+        uidev.id.product = 0xfedc;
+        uidev.id.version = 1;
+
+        /* ABS X */
+        uidev.absmin[ABS_X] = tmin_x;
+        uidev.absmax[ABS_X] = tmax_x;
+        uidev.absfuzz[ABS_X] = 0;
+        uidev.absflat[ABS_X] = 0;
+
+        /* ABS Y */
+        uidev.absmin[ABS_Y] = tmin_y;
+        uidev.absmax[ABS_Y] = tmax_y;
+        uidev.absfuzz[ABS_Y] = 0;
+        uidev.absflat[ABS_Y] = 0;
+
+        /* PRESSURE */
+        uidev.absmin[ABS_PRESSURE] = 0;
+        uidev.absmax[ABS_PRESSURE] = 1024;
+        uidev.absfuzz[ABS_PRESSURE] = 0;
+        uidev.absflat[ABS_PRESSURE] = 0;
+
+        if (write(fd, &uidev, sizeof(uidev)) < 0) {
+            perror("write uinput_user_dev");
+            close(fd);
+            return -1;
+        }
+
+        if (ioctl(fd, UI_DEV_CREATE) < 0) {
+            perror("UI_DEV_CREATE");
+            close(fd);
+            return -1;
+        }
+
+        return fd;
 }
 
 static inline int test_bit(int bit, const unsigned long *array) {
@@ -286,7 +335,6 @@ int main(int argc, char *argv[]) {
         .y_offset_pct = 0,
         .y_scale_pct = 100,
         .keep_ratio = 1,
-        .enable_buttons = 1,
         .enable_tosu = 0
     };
 
@@ -458,7 +506,7 @@ int main(int argc, char *argv[]) {
         struct timespec ts_now;
         clock_gettime(CLOCK_MONOTONIC, &ts_now);
         long dt_ms = (ts_now.tv_sec - ts_last.tv_sec) * 1000 +
-                    (ts_now.tv_nsec - ts_last.tv_nsec) / 1000000;
+        (ts_now.tv_nsec - ts_last.tv_nsec) / 1000000;
 
         if (config.enable_tosu && dt_ms >= 16) { // ~60Hz
             active = tosu_get_absolute_state();
@@ -505,22 +553,7 @@ int main(int argc, char *argv[]) {
                     x_old = x;
                     y_old = y;
                 }
-            }
-
-            if (config.enable_buttons &&
-                ev.type == EV_KEY &&
-                ev.code == BTN_LEFT) {
-
-                struct input_event btn[2] = {
-                    { .type = EV_KEY, .code = BTN_LEFT, .value = ev.value },
-                    { .type = EV_SYN, .code = SYN_REPORT, .value = 0 }
-                };
-                ssize_t bw = write(tab_fd, btn, sizeof(btn));
-                if (bw != (ssize_t)sizeof(btn)) {
-                    perror("write BTN_LEFT");
-                    break;
-                }
-            }
+            }\
         }
         else {
             // Inactive: long sleep to reduce CPU, but wake often enough to detect activation
@@ -532,7 +565,7 @@ int main(int argc, char *argv[]) {
     }
     exit_code = EXIT_SUCCESS;
 
-cleanup:
+    cleanup:
     if (grabbed && fd >= 0 && ioctl(fd, EVIOCGRAB, 0) < 0) {
         perror("ioctl EVIOCGRAB release");
     }
