@@ -57,7 +57,7 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 ## Usage
 
-If playing on osu!Lazer, disable High Precision Mouse (and Fullscreen/Confine mouse cursor to window, if on Wayland) within Lazer's settings.
+If playing on osu!Lazer, make sure to **enable** high Precision Mouse, (and **disable** Fullscreen/Confine mouse cursor to window, if on Wayland)
 
 Either run abs-c as root, or add your user to the input group (reboot afterwards):
 
