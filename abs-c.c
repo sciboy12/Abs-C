@@ -1,6 +1,3 @@
-#define _XOPEN_SOURCE 700
-#define _POSIX_C_SOURCE 200809L
-
 #include "tosuhandler.h"
 #include <dirent.h>
 #include <errno.h>
@@ -21,95 +18,17 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#include <math.h>
 
+#define INACTIVE_SLEEP_MS 100 // long sleep to save CPU
 
 volatile sig_atomic_t stop = 0;
 int tab_fd = -1;
 int fd = -1;
-bool have_x = false;
-bool have_y = false;
 
 static void quit(int sig)
 {
     (void)sig;
     stop = 1;
-}
-
-static inline bool emit_events(const struct input_event *ev, int n)
-{
-    size_t total = (size_t)n * sizeof(struct input_event);
-    const unsigned char *p = (const unsigned char *)ev;
-    size_t done = 0;
-
-    while (done < total)
-    {
-        ssize_t w = write(tab_fd, p + done, total - done);
-        if (w < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            perror("write input_event batch");
-            return false;
-        }
-        if (w == 0)
-        {
-            errno = EIO;
-            perror("write input_event batch");
-            return false;
-        }
-        done += (size_t)w;
-    }
-
-    return true;
-}
-
-static inline bool emit_frame(bool tool_pen,
-                            bool touch,
-                            int x,
-                            int y,
-                            int pressure,
-                            int distance)
-{
-    struct input_event ev[8];
-    int n = 0;
-
-    ev[n++] = (struct input_event){
-        .type = EV_KEY,
-        .code = BTN_TOOL_PEN,
-        .value = tool_pen};
-
-    ev[n++] = (struct input_event){
-        .type = EV_KEY,
-        .code = BTN_TOUCH,
-        .value = touch};
-
-    ev[n++] = (struct input_event){
-        .type = EV_ABS,
-        .code = ABS_X,
-        .value = x};
-
-    ev[n++] = (struct input_event){
-        .type = EV_ABS,
-        .code = ABS_Y,
-        .value = y};
-
-    ev[n++] = (struct input_event){
-        .type = EV_ABS,
-        .code = ABS_PRESSURE,
-        .value = pressure};
-
-    ev[n++] = (struct input_event){
-        .type = EV_ABS,
-        .code = ABS_DISTANCE,
-        .value = distance};
-
-    ev[n++] = (struct input_event){
-        .type = EV_SYN,
-        .code = SYN_REPORT,
-        .value = 0};
-
-    return emit_events(ev, n);
 }
 
 static inline void set_grab(int fd, bool *grabbed, bool want)
@@ -207,7 +126,7 @@ typedef struct
 } configuration;
 
 static int handler(void *user, const char *section, const char *name,
-                const char *value)
+                   const char *value)
 {
     configuration *cfg = (configuration *)user;
 #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
@@ -250,21 +169,13 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
         return -1;
     }
 
-    /* Pen buttons */
     ioctl(fd, UI_SET_KEYBIT, BTN_TOOL_PEN);
     ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
     ioctl(fd, UI_SET_KEYBIT, BTN_STYLUS);
-    ioctl(fd, UI_SET_KEYBIT, BTN_STYLUS2);
 
-    /* Absolute axes */
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
     ioctl(fd, UI_SET_ABSBIT, ABS_PRESSURE);
-
-    /* Required-ish for modern tablet recognition */
-    ioctl(fd, UI_SET_ABSBIT, ABS_DISTANCE);
-
-    /* Optional but highly recommended */
 
     struct uinput_abs_setup abs;
 
@@ -295,16 +206,6 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
     if (ioctl(fd, UI_ABS_SETUP, &abs) < 0)
         perror("UI_ABS_SETUP PRESSURE");
 
-    /* ABS_DISTANCE */
-    memset(&abs, 0, sizeof(abs));
-    abs.code = ABS_DISTANCE;
-    abs.absinfo.minimum = 0;
-    abs.absinfo.maximum = 1;
-    abs.absinfo.resolution = 1;
-
-    if (ioctl(fd, UI_ABS_SETUP, &abs) < 0)
-        perror("UI_ABS_SETUP DISTANCE");
-
     ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
     struct uinput_user_dev uidev = {0};
@@ -334,10 +235,6 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
     uidev.absfuzz[ABS_PRESSURE] = 0;
     uidev.absflat[ABS_PRESSURE] = 0;
 
-    /* DISTANCE */
-    uidev.absmin[ABS_DISTANCE] = 0;
-    uidev.absmax[ABS_DISTANCE] = 1;
-
     if (write(fd, &uidev, sizeof(uidev)) < 0)
     {
         perror("write uinput_user_dev");
@@ -351,14 +248,17 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
         close(fd);
         return -1;
     }
+    struct input_event ev = {0};
 
-    /* Allow device enumeration to settle */
-    struct timespec ts = {
-        .tv_sec = 0,
-        .tv_nsec = 100000000L
-    };
+    ev.type = EV_KEY;
+    ev.code = BTN_TOOL_PEN;
+    ev.value = 1;
+    write(fd, &ev, sizeof(ev));
 
-    nanosleep(&ts, NULL);
+    ev.type = EV_SYN;
+    ev.code = SYN_REPORT;
+    ev.value = 0;
+    write(fd, &ev, sizeof(ev));
 
     return fd;
 }
@@ -367,9 +267,8 @@ static inline int test_bit(int bit, const unsigned long *array)
 {
     return (array[bit / (8 * sizeof(unsigned long))] >>
             (bit % (8 * sizeof(unsigned long)))) &
-        1;
+           1;
 }
-
 
 void print_help(const char *prog)
 {
@@ -425,13 +324,13 @@ void list_devices()
         ioctl(devfd, EVIOCGNAME(sizeof(name)), name);
 
         unsigned long evbits[(EV_MAX + (sizeof(unsigned long) * 8) - 1) /
-                            (sizeof(unsigned long) * 8)] = {0};
+                             (sizeof(unsigned long) * 8)] = {0};
         ioctl(devfd, EVIOCGBIT(0, sizeof(evbits)), evbits);
 
         if (test_bit(EV_ABS, evbits))
         {
             unsigned long absbits[(ABS_MAX + (sizeof(unsigned long) * 8) - 1) /
-                                (sizeof(unsigned long) * 8)] = {0};
+                                  (sizeof(unsigned long) * 8)] = {0};
 
             ioctl(devfd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits);
 
@@ -448,6 +347,36 @@ void list_devices()
     }
 
     free(namelist);
+}
+
+static inline bool emit_abs_delta(int x, int y, bool x_dirty, bool y_dirty)
+{
+    struct input_event ev[3];
+    int n = 0;
+
+    if (x_dirty)
+    {
+        ev[n++] =
+            (struct input_event){.type = EV_ABS, .code = ABS_X, .value = x};
+    }
+
+    if (y_dirty)
+    {
+        ev[n++] =
+            (struct input_event){.type = EV_ABS, .code = ABS_Y, .value = y};
+    }
+
+    // Always terminate with SYN
+    ev[n++] =
+        (struct input_event){.type = EV_SYN, .code = SYN_REPORT, .value = 0};
+
+    ssize_t wrote = write(tab_fd, ev, n * sizeof(struct input_event));
+    if (wrote != (ssize_t)(n * sizeof(struct input_event)))
+    {
+        perror("write EV_ABS");
+        return false;
+    }
+    return true;
 }
 
 int main(int argc, char *argv[])
@@ -506,7 +435,7 @@ int main(int argc, char *argv[])
             goto cleanup;
         }
         else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "--device")) &&
-                i + 1 < argc)
+                 i + 1 < argc)
             dev_override = argv[++i];
     }
 
@@ -572,7 +501,7 @@ int main(int argc, char *argv[])
         }
 
         unsigned long evbits[(EV_MAX + (sizeof(unsigned long) * 8) - 1) /
-                            (sizeof(unsigned long) * 8)] = {0};
+                             (sizeof(unsigned long) * 8)] = {0};
         if (ioctl(devfd, EVIOCGBIT(0, sizeof(evbits)), evbits) < 0)
         {
             perror("ioctl EVIOCGBIT");
@@ -583,7 +512,7 @@ int main(int argc, char *argv[])
         if (test_bit(EV_ABS, evbits))
         {
             unsigned long absbits[(ABS_MAX + (sizeof(unsigned long) * 8) - 1) /
-                                (sizeof(unsigned long) * 8)] = {0};
+                                  (sizeof(unsigned long) * 8)] = {0};
 
             if (ioctl(devfd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) < 0)
             {
@@ -622,7 +551,7 @@ int main(int argc, char *argv[])
     {
         fprintf(stderr,
                 dev_override ? "No device matching '%s'\n"
-                            : "No suitable input device found.\n",
+                             : "No suitable input device found.\n",
                 dev_override);
         goto cleanup;
     }
@@ -649,9 +578,9 @@ int main(int argc, char *argv[])
 
     double sr = (double)config.display_width / config.display_height;
     float x_center = (tmin_x + tmax_x) / 2.0f +
-                    config.x_offset_pct * 0.01f * (tmax_x - tmin_x) / 2.0f;
+                     config.x_offset_pct * 0.01f * (tmax_x - tmin_x) / 2.0f;
     float y_center = (tmin_y + tmax_y) / 2.0f +
-                    config.y_offset_pct * 0.01f * (tmax_y - tmin_y) / 2.0f;
+                     config.y_offset_pct * 0.01f * (tmax_y - tmin_y) / 2.0f;
 
     float desired_width = (tmax_x - tmin_x) * config.x_scale_pct * 0.01f;
     float desired_height = (tmax_y - tmin_y) * config.y_scale_pct * 0.01f;
@@ -691,19 +620,12 @@ int main(int argc, char *argv[])
     struct input_event ev_buf[64];
 
     int x = 0, y = 0;
-    int pending_x = 0;
-    int pending_y = 0;
-
-    bool frame_has_x = false;
-    bool frame_has_y = false;
-    int pressure = 0;
-    int distance = 1;
-    bool active = true;
-    bool last_active = active;
-    bool pen_down = false;
-    bool pen_hover = false;
-    bool dirty = false;
-    bool prev_active = active;
+    bool x_updated = false;
+    bool y_updated = false;
+    static int last_emitted_x = -1;
+    static int last_emitted_y = -1;
+    bool active = false;
+    static bool pen_down = false;
 
     if (config.enable_tosu)
     {
@@ -711,57 +633,37 @@ int main(int argc, char *argv[])
         tosu_started = true;
     }
 
-    /* Give Tosu IPC/shared state a moment to initialize */
-    struct timespec ts = {
-        .tv_sec = 0,
-        .tv_nsec = 50000000L /* 50ms */
-    };
-
-    nanosleep(&ts, NULL);
-
-    /* Initial sync */
-    if (config.enable_tosu)
-    {
-        active = tosu_get_absolute_state();
-        last_active = active;
-        prev_active = active;
-    }
+    struct timespec ts_last;
+    clock_gettime(CLOCK_MONOTONIC, &ts_last);
 
     printf("Press Ctrl-C to quit\n");
 
     while (!stop)
     {
-        if (config.enable_tosu)
+
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+
+        long dt_ms = (ts_now.tv_sec - ts_last.tv_sec) * 1000 +
+                     (ts_now.tv_nsec - ts_last.tv_nsec) / 1000000;
+
+        if (config.enable_tosu && dt_ms >= 16)
         {
             active = tosu_get_absolute_state();
-            if (active && !prev_active)
+            ts_last = ts_now;
+        }
+
+        set_grab(fd, &grabbed, active);
+
+        int poll_ret = poll(&pfd, 1, INACTIVE_SLEEP_MS);
+        if (poll_ret <= 0)
+        {
+            if (!active)
             {
-                dirty = true;
+                struct timespec ts = {.tv_sec = 0,
+                                      .tv_nsec = INACTIVE_SLEEP_MS * 1000000L};
+                nanosleep(&ts, NULL);
             }
-
-            prev_active = active;
-        }
-
-
-        if (active != last_active)
-        {
-            set_grab(fd, &grabbed, active);
-            last_active = active;
-        }
-
-        int poll_ret = poll(&pfd, 1, -1);
-
-        if (poll_ret < 0)
-        {
-            if (errno == EINTR)
-                continue;
-
-            perror("poll");
-            break;
-        }
-
-        if (poll_ret == 0)
-        {
             continue;
         }
 
@@ -780,139 +682,121 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        if (rd % sizeof(struct input_event) != 0)
-        {
-            fprintf(stderr, "partial input_event read\n");
-            continue;
-        }
-
         int nevents = rd / sizeof(struct input_event);
 
         for (int i = 0; i < nevents; i++)
         {
+
             struct input_event *ev = &ev_buf[i];
 
+            /* HARD DISABLE GATE:
+               If inactive, we still consume events but DO NOT update state */
+            if (!active)
+            {
+                continue;
+            }
 
             if (ev->type == EV_KEY)
             {
-                /*
-                    BTN_TOUCH from source device:
-                    means hover/proximity exists
-                */
-                if (ev->code == BTN_TOUCH)
-                {
-                    if (ev->value && !pen_hover)
-                    {
-                        pen_hover = true;
-                        distance = pen_down ? 0 : 1;
-                        pressure = pen_down ? 1024 : 0;
-                        dirty = true;
-                    }
-                    else if (!ev->value && pen_hover)
-                    {
-                        pen_hover = false;
-                        pen_down = false;
-                        pressure = 0;
-                        distance = 1;
-                        dirty = true;
-                    }
-                }
 
-                /*
-                    BTN_LEFT from source device:
-                    means actual pen contact
-                */
-                else if (ev->code == BTN_LEFT)
+                if (ev->code == BTN_TOUCH)
                 {
                     if (ev->value && !pen_down)
                     {
-                        /* PEN DOWN */
-                        pen_hover = true;
+
+                        struct input_event out = {0};
+
+                        out.type = EV_KEY;
+                        out.code = BTN_TOOL_PEN;
+                        out.value = 1;
+                        write(tab_fd, &out, sizeof(out));
+
+                        out.type = EV_KEY;
+                        out.code = BTN_TOUCH;
+                        out.value = 1;
+                        write(tab_fd, &out, sizeof(out));
+
+                        out.type = EV_SYN;
+                        out.code = SYN_REPORT;
+                        out.value = 0;
+                        write(tab_fd, &out, sizeof(out));
+
                         pen_down = true;
-                        pressure = 1024;
-                        distance = 0;
-                        dirty = true;
                     }
+
                     else if (!ev->value && pen_down)
                     {
-                        /* PEN UP */
+
+                        struct input_event out = {0};
+
+                        out.type = EV_KEY;
+                        out.code = BTN_TOUCH;
+                        out.value = 0;
+                        write(tab_fd, &out, sizeof(out));
+
+                        out.type = EV_KEY;
+                        out.code = BTN_TOOL_PEN;
+                        out.value = 0;
+                        write(tab_fd, &out, sizeof(out));
+
+                        out.type = EV_SYN;
+                        out.code = SYN_REPORT;
+                        out.value = 0;
+                        write(tab_fd, &out, sizeof(out));
+
                         pen_down = false;
-                        pressure = 0;
-                        distance = 1;
-                        dirty = true;
                     }
                 }
             }
+
             else if (ev->type == EV_ABS)
             {
                 switch (ev->code)
                 {
                 case ABS_X:
-                    pending_x = ev->value;
-                    frame_has_x = true;
-                    have_x = true;
-                    dirty = true;
+                    x = ev->value;
+                    x_updated = true;
                     break;
 
                 case ABS_Y:
-                    pending_y = ev->value;
-                    frame_has_y = true;
-                    have_y = true;
-                    dirty = true;
+                    y = ev->value;
+                    y_updated = true;
                     break;
 
                 default:
                     break;
                 }
             }
+
             else if (ev->type == EV_SYN && ev->code == SYN_REPORT)
             {
-                if (ev->code == SYN_DROPPED)
-                {
-                    fprintf(stderr, "SYN_DROPPED received\n");
 
-                    frame_has_x = false;
-                    frame_has_y = false;
-                    dirty = false;
-
+                if (!pen_down)
                     continue;
-                }
-                if (dirty && have_x && have_y)
+
+                if (x_updated || y_updated)
                 {
-                    if (frame_has_x)
-                        x = pending_x;
 
-                    if (frame_has_y)
-                        y = pending_y;
-
-                    bool tool_pen = pen_hover || pen_down;
-                    bool touch = pen_down;
-
-                    /*
-                        IMPORTANT:
-                        Always process and commit internal state,
-                        even while inactive.
-
-                        Only suppress OUTPUT emission.
-                    */
-                    if (active)
+                    if (x != last_emitted_x || y != last_emitted_y)
                     {
-                        if (!emit_frame(tool_pen,
-                                        touch,
-                                        x,
-                                        y,
-                                        pressure,
-                                        distance))
-                        {
-                            goto cleanup;
-                        }
+                        emit_abs_delta(x, y, true, true);
+                        last_emitted_x = x;
+                        last_emitted_y = y;
                     }
 
-                    dirty = false;
-                    frame_has_x = false;
-                    frame_has_y = false;
+                    x_updated = false;
+                    y_updated = false;
                 }
             }
+        }
+
+        /* HARD RESET WHEN INACTIVE:
+           kills ghost state + prevents late emissions */
+        if (!active)
+        {
+            pen_down = false;
+            x_updated = false;
+            y_updated = false;
         }
     }
     exit_code = EXIT_SUCCESS;
