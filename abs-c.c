@@ -624,7 +624,7 @@ int main(int argc, char *argv[])
     bool y_updated = false;
     static int last_emitted_x = -1;
     static int last_emitted_y = -1;
-    bool active = false;
+    bool active = true;
     static bool pen_down = false;
 
     if (config.enable_tosu)
