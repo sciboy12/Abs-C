@@ -27,7 +27,7 @@ static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static _Atomic bool running = false;
 static bool thread_started = false;
-static bool last_abs_state = false;
+static bool last_abs_state = true;
 
 /* Track previous menu state and whether we're currently treating the session as a replay.
  * Protected by state_mutex. */
@@ -201,13 +201,23 @@ static void *poll_thread_func(void *arg) {
             }
         }
 
+        CURLcode result = CURLE_FAILED_INIT;
+        CURLMsg *msg;
+        int msgs_left;
+        while ((msg = curl_multi_info_read(multi, &msgs_left))) {
+            if (msg->msg == CURLMSG_DONE && msg->easy_handle == easy) {
+                result = msg->data.result;
+                break;
+            }
+        }
+
         mrc = curl_multi_remove_handle(multi, easy);
         if (mrc != CURLM_OK) {
             fprintf(stderr, "[tosu] curl_multi_remove_handle failed: %s\n", curl_multi_strerror(mrc));
             break;
         }
 
-        if (buf.data) {
+        if (result == CURLE_OK && buf.data) {
             cJSON *root = cJSON_Parse(buf.data);
             if (root) {
                 bool current = should_enable_absolute(root);
@@ -229,8 +239,12 @@ static void *poll_thread_func(void *arg) {
 
                 cJSON_Delete(root);
             }
-            free(buf.data);
+        } else if (result != CURLE_OK) {
+            fprintf(stderr, "[tosu] request failed: %s; keeping last absolute state\n",
+                    curl_easy_strerror(result));
         }
+
+        free(buf.data);
             struct timespec ts = {
                 .tv_sec = POLL_INTERVAL_MS / 1000,
                 .tv_nsec = (POLL_INTERVAL_MS % 1000) * 1000000L
@@ -264,7 +278,7 @@ void tosu_init(void) {
         pthread_mutex_unlock(&state_mutex);
         return;
     }
-    last_abs_state = false;
+    last_abs_state = true;
     last_menu_state = -1;
     replay_session = false;
     pthread_mutex_unlock(&state_mutex);
