@@ -35,7 +35,7 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 `x_offset_pct`: X Offset
 
-`x_scale_pct`: X Scale 
+`x_scale_pct`: X Scale
 
 `y_offset_pct`: Y Offset
 
@@ -50,9 +50,11 @@ These values are relative to the center of the touchpad/screen and are measured 
 ## Launch options
 
   `-h`, `--help`:            Show the help message
-  
+
+  `-v`, `--verbose`:         Show non-critical diagnostic logging
+
   `-l`, `--list`:            List input devices with EV_ABS support
-  
+
   `-d <arg>`, `--device <arg>`:    Specify device by path or name substring
 
 ## Usage
