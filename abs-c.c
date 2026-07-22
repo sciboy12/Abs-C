@@ -454,14 +454,15 @@ int main(int argc, char *argv[])
     char *config_path = get_abs_c_config_path();
     if (!config_path)
     {
-        verbose_fprintf(
-            stderr,
-            "Couldn't find the config file path. Using default settings.\n");
+        fprintf(stderr, "Could not load abs-c.ini; using default config.\n");
     }
     else
     {
-        verbose_fprintf(stderr, "Loading config from %s\n", config_path);
-        ini_parse(config_path, handler, &config);
+        printf("Loading config from %s\n", config_path);
+        if (ini_parse(config_path, handler, &config) < 0)
+        {
+            fprintf(stderr, "Could not load abs-c.ini; using default config.\n");
+        }
         free(config_path);
     }
 
@@ -561,7 +562,7 @@ int main(int argc, char *argv[])
             {
                 fd = devfd;
                 found = usable = true;
-                verbose_fprintf(stderr, "Using device %s (%s)\n", path, name);
+                printf("Using device %s (%s)\n", path, name);
                 devfd = -1;
             }
         }
@@ -670,7 +671,7 @@ int main(int argc, char *argv[])
     struct timespec ts_last;
     clock_gettime(CLOCK_MONOTONIC, &ts_last);
 
-    verbose_fprintf(stderr, "Press Ctrl-C to quit\n");
+    printf("Press Ctrl-C to quit\n");
 
     while (!stop)
     {
@@ -858,6 +859,6 @@ cleanup:
         close(fd);
         fd = -1;
     }
-    verbose_fprintf(stderr, "Exiting with status %d\n", exit_code);
+    fprintf(stderr, "Exiting with status %d\n", exit_code);
     return exit_code;
 }
