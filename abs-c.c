@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <stdarg.h>
 #include <unistd.h>
 
 #define INACTIVE_SLEEP_MS 100 // long sleep to save CPU
@@ -24,6 +25,24 @@
 volatile sig_atomic_t stop = 0;
 int tab_fd = -1;
 int fd = -1;
+static bool verbose_logging = false;
+
+static void verbose_perror(const char *msg)
+{
+    if (verbose_logging)
+        perror(msg);
+}
+
+static void verbose_fprintf(FILE *stream, const char *fmt, ...)
+{
+    if (!verbose_logging)
+        return;
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stream, fmt, args);
+    va_end(args);
+}
 
 static void quit(int sig)
 {
@@ -41,7 +60,7 @@ static inline void set_grab(int fd, bool *grabbed, bool want)
     }
     else
     {
-        perror("ioctl EVIOCGRAB");
+        verbose_perror("ioctl EVIOCGRAB");
     }
 }
 
@@ -106,9 +125,9 @@ void check_caps(const char *binary_name)
     if (cap_get_flag(caps, CAP_SYS_NICE, CAP_EFFECTIVE, &cap_flag) == 0 &&
         cap_flag != CAP_SET)
     {
-        fprintf(stderr, "[!] Warning: CAP_SYS_NICE not set. Real-time priority "
-                        "might fail.\n");
-        fprintf(stderr, "    Run: sudo setcap cap_sys_nice=eip %s\n", fullpath);
+        verbose_fprintf(stderr, "[!] Warning: CAP_SYS_NICE not set. Real-time priority "
+                                "might fail.\n");
+        verbose_fprintf(stderr, "    Run: sudo setcap cap_sys_nice=eip %s\n", fullpath);
     }
     cap_free(caps);
 }
@@ -186,7 +205,7 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
     abs.absinfo.maximum = tmax_x;
     abs.absinfo.resolution = 1000;
     if (ioctl(fd, UI_ABS_SETUP, &abs) < 0)
-        perror("UI_ABS_SETUP ABS_X");
+        verbose_perror("UI_ABS_SETUP ABS_X");
 
     /* ABS_Y */
     memset(&abs, 0, sizeof(abs));
@@ -195,7 +214,7 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
     abs.absinfo.maximum = tmax_y;
     abs.absinfo.resolution = 1000;
     if (ioctl(fd, UI_ABS_SETUP, &abs) < 0)
-        perror("UI_ABS_SETUP ABS_Y");
+        verbose_perror("UI_ABS_SETUP ABS_Y");
 
     /* ABS_PRESSURE */
     memset(&abs, 0, sizeof(abs));
@@ -204,7 +223,7 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
     abs.absinfo.maximum = 1024;
     abs.absinfo.resolution = 1;
     if (ioctl(fd, UI_ABS_SETUP, &abs) < 0)
-        perror("UI_ABS_SETUP PRESSURE");
+        verbose_perror("UI_ABS_SETUP PRESSURE");
 
     ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
@@ -274,6 +293,7 @@ void print_help(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
     printf("  -h, --help            Show this help message\n");
+    printf("  -v, --verbose         Show non-critical diagnostic logging\n");
     printf("  -l, --list            List input devices with EV_ABS support\n");
     printf(
         "  -d, --device <arg>    Specify device by path or name substring\n");
@@ -385,6 +405,32 @@ int main(int argc, char *argv[])
     bool grabbed = false;
     bool tosu_started = false;
 
+    const char *dev_override = NULL;
+    bool list_requested = false;
+
+    for (int i = 1; i < argc; i++)
+    {
+        if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose"))
+        {
+            verbose_logging = true;
+        }
+        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help"))
+        {
+            print_help(argv[0]);
+            exit_code = EXIT_SUCCESS;
+            goto cleanup;
+        }
+        else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--list"))
+        {
+            list_requested = true;
+        }
+        else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "--device")) &&
+                 i + 1 < argc)
+        {
+            dev_override = argv[++i];
+        }
+    }
+
     struct sigaction sa = {0};
     sa.sa_handler = quit;
     sigemptyset(&sa.sa_mask);
@@ -408,35 +454,22 @@ int main(int argc, char *argv[])
     char *config_path = get_abs_c_config_path();
     if (!config_path)
     {
-        fprintf(
+        verbose_fprintf(
             stderr,
             "Couldn't find the config file path. Using default settings.\n");
     }
     else
     {
-        printf("Loading config from %s\n", config_path);
+        verbose_fprintf(stderr, "Loading config from %s\n", config_path);
         ini_parse(config_path, handler, &config);
         free(config_path);
     }
 
-    const char *dev_override = NULL;
-    for (int i = 1; i < argc; i++)
+    if (list_requested)
     {
-        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help"))
-        {
-            print_help(argv[0]);
-            exit_code = EXIT_SUCCESS;
-            goto cleanup;
-        }
-        else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--list"))
-        {
-            list_devices();
-            exit_code = EXIT_SUCCESS;
-            goto cleanup;
-        }
-        else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "--device")) &&
-                 i + 1 < argc)
-            dev_override = argv[++i];
+        list_devices();
+        exit_code = EXIT_SUCCESS;
+        goto cleanup;
     }
 
     struct dirent **namelist;
@@ -528,7 +561,7 @@ int main(int argc, char *argv[])
             {
                 fd = devfd;
                 found = usable = true;
-                printf("Using device %s (%s)\n", path, name);
+                verbose_fprintf(stderr, "Using device %s (%s)\n", path, name);
                 devfd = -1;
             }
         }
@@ -609,11 +642,11 @@ int main(int argc, char *argv[])
     struct sched_param param = {.sched_priority = 20};
     if (sched_setscheduler(0, SCHED_FIFO, &param) < 0)
     {
-        perror("sched_setscheduler");
+        verbose_perror("sched_setscheduler");
     }
     if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0)
     {
-        perror("mlockall");
+        verbose_perror("mlockall");
     }
 
     struct pollfd pfd = {.fd = fd, .events = POLLIN};
@@ -629,6 +662,7 @@ int main(int argc, char *argv[])
 
     if (config.enable_tosu)
     {
+        tosu_set_verbose(verbose_logging);
         tosu_init();
         tosu_started = true;
     }
@@ -636,7 +670,7 @@ int main(int argc, char *argv[])
     struct timespec ts_last;
     clock_gettime(CLOCK_MONOTONIC, &ts_last);
 
-    printf("Press Ctrl-C to quit\n");
+    verbose_fprintf(stderr, "Press Ctrl-C to quit\n");
 
     while (!stop)
     {
@@ -804,7 +838,7 @@ int main(int argc, char *argv[])
 cleanup:
     if (grabbed && fd >= 0 && ioctl(fd, EVIOCGRAB, 0) < 0)
     {
-        perror("ioctl EVIOCGRAB release");
+        verbose_perror("ioctl EVIOCGRAB release");
     }
     if (tosu_started)
     {
@@ -814,7 +848,7 @@ cleanup:
     {
         if (ioctl(tab_fd, UI_DEV_DESTROY) < 0)
         {
-            perror("ioctl UI_DEV_DESTROY");
+            verbose_perror("ioctl UI_DEV_DESTROY");
         }
         close(tab_fd);
         tab_fd = -1;
@@ -824,6 +858,6 @@ cleanup:
         close(fd);
         fd = -1;
     }
-    fprintf(stderr, "Exiting with status %d\n", exit_code);
+    verbose_fprintf(stderr, "Exiting with status %d\n", exit_code);
     return exit_code;
 }

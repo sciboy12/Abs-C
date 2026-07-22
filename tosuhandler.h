@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+// Enable or disable non-critical diagnostic logging
+void tosu_set_verbose(bool verbose);
+
 // Initialize and start the WebSocket connection
 void tosu_init(void);
 
