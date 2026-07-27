@@ -581,7 +581,7 @@ int main(int argc, char *argv[])
     struct stat st;
     bool found = false, usable = false;
 
-    for (int i = 0; i < ndevs && !found; i++)
+    for (int i = 0; i < ndevs && !usable; i++)
     {
         if (strcmp(namelist[i]->d_name, ".") == 0 ||
             strcmp(namelist[i]->d_name, "..") == 0)
@@ -628,6 +628,7 @@ int main(int argc, char *argv[])
                 close(devfd);
                 continue;
             }
+            found = true;
         }
 
         unsigned long evbits[(EV_MAX + (sizeof(unsigned long) * 8) - 1) /
@@ -663,11 +664,6 @@ int main(int argc, char *argv[])
             }
         }
 
-        else if (dev_override)
-        {
-            found = true;
-            usable = false;
-        }
 
         if (devfd >= 0)
             close(devfd);
