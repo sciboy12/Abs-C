@@ -299,7 +299,9 @@ static bool is_recognized_option(const char *arg)
 static char *normalize_device_name(const char *device)
 {
     size_t len = strlen(device);
-    bool quoted = len >= 2 && device[0] == '"' && device[len - 1] == '"';
+    bool quoted = len >= 2 &&
+                  ((device[0] == '"' && device[len - 1] == '"') ||
+                   (device[0] == '\'' && device[len - 1] == '\''));
     size_t start = quoted ? 1 : 0;
     size_t end = quoted ? len - 1 : len;
 
@@ -336,33 +338,31 @@ static char *parse_device_arg(int argc, char **argv, int *index)
         return strdup(argv[start]);
     }
 
-    size_t len = 0;
-    int end = start;
-    bool quoted = argv[start][0] == '"';
+    char quote = (argv[start][0] == '"' || argv[start][0] == '\'')
+                     ? argv[start][0]
+                     : '\0';
+    int end = start + 1;
+    size_t len = strlen(argv[start]);
 
-    for (; end < argc; end++)
+    if (quote)
     {
-        if (end > start && is_recognized_option(argv[end]))
-            break;
-
-        len += strlen(argv[end]) + (end > start ? 1 : 0);
-
-        size_t token_len = strlen(argv[end]);
-        if (quoted && token_len > 0 && argv[end][token_len - 1] == '"')
+        while (end < argc)
         {
-            end++;
-            break;
-        }
+            if (is_recognized_option(argv[end]))
+                break;
 
-        if (!quoted && end + 1 < argc && is_recognized_option(argv[end + 1]))
-        {
+            len += strlen(argv[end]) + 1;
+
+            size_t token_len = strlen(argv[end]);
+            if (token_len > 0 && argv[end][token_len - 1] == quote)
+            {
+                end++;
+                break;
+            }
+
             end++;
-            break;
         }
     }
-
-    if (end == start)
-        return NULL;
 
     char *joined = malloc(len + 1);
     if (!joined)
@@ -390,7 +390,7 @@ void print_help(const char *prog)
     printf("  -v, --verbose         Show non-critical diagnostic logging\n");
     printf("  -l, --list            List input devices with EV_ABS support\n");
     printf(
-        "  -d, --device <arg>    Specify device by path or name substring\n");
+        "  -d, --device <arg>    Specify device by path or exact name\n");
     printf("                         Examples: %s -d \"Device Name With Spaces\"\n", prog);
     printf("                                   %s -d Device\\ Name\\ With\\ Spaces\n", prog);
 }
@@ -623,7 +623,7 @@ int main(int argc, char *argv[])
                 close(devfd);
                 continue;
             }
-            else if (dev_override[0] != '/' && !strstr(name, dev_override))
+            else if (dev_override[0] != '/' && strcmp(name, dev_override) != 0)
             {
                 close(devfd);
                 continue;
@@ -663,7 +663,6 @@ int main(int argc, char *argv[])
                 devfd = -1;
             }
         }
-
 
         if (devfd >= 0)
             close(devfd);

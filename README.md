@@ -55,7 +55,7 @@ These values are relative to the center of the touchpad/screen and are measured 
 
   `-l`, `--list`:            List input devices with EV_ABS support
 
-  `-d <arg>`, `--device <arg>`:    Specify device by path or name substring. Device names with spaces can be passed as quoted text or with escaped spaces:
+  `-d <arg>`, `--device <arg>`:    Specify device by path or exact name. Device names with spaces can be passed as quoted text or with escaped spaces:
 
   ```sh
   ./abs-c -d "Device Name With Spaces"
