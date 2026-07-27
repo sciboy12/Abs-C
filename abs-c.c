@@ -289,6 +289,100 @@ static inline int test_bit(int bit, const unsigned long *array)
            1;
 }
 
+static bool is_recognized_option(const char *arg)
+{
+    return !strcmp(arg, "-v") || !strcmp(arg, "--verbose") ||
+           !strcmp(arg, "-h") || !strcmp(arg, "--help") ||
+           !strcmp(arg, "-l") || !strcmp(arg, "--list");
+}
+
+static char *normalize_device_name(const char *device)
+{
+    size_t len = strlen(device);
+    bool quoted = len >= 2 && device[0] == '"' && device[len - 1] == '"';
+    size_t start = quoted ? 1 : 0;
+    size_t end = quoted ? len - 1 : len;
+
+    char *normalized = malloc(end - start + 1);
+    if (!normalized)
+        return NULL;
+
+    size_t out = 0;
+    for (size_t in = start; in < end; in++)
+    {
+        if (device[in] == '\\' && in + 1 < end && device[in + 1] == ' ')
+        {
+            normalized[out++] = ' ';
+            in++;
+        }
+        else
+        {
+            normalized[out++] = device[in];
+        }
+    }
+    normalized[out] = '\0';
+    return normalized;
+}
+
+static char *parse_device_arg(int argc, char **argv, int *index)
+{
+    int start = *index + 1;
+    if (start >= argc || is_recognized_option(argv[start]))
+        return NULL;
+
+    if (!strncmp(argv[start], "/dev/input/", strlen("/dev/input/")))
+    {
+        *index = start;
+        return strdup(argv[start]);
+    }
+
+    size_t len = 0;
+    int end = start;
+    bool quoted = argv[start][0] == '"';
+
+    for (; end < argc; end++)
+    {
+        if (end > start && is_recognized_option(argv[end]))
+            break;
+
+        len += strlen(argv[end]) + (end > start ? 1 : 0);
+
+        size_t token_len = strlen(argv[end]);
+        if (quoted && token_len > 0 && argv[end][token_len - 1] == '"')
+        {
+            end++;
+            break;
+        }
+
+        if (!quoted && end + 1 < argc && is_recognized_option(argv[end + 1]))
+        {
+            end++;
+            break;
+        }
+    }
+
+    if (end == start)
+        return NULL;
+
+    char *joined = malloc(len + 1);
+    if (!joined)
+        return NULL;
+
+    joined[0] = '\0';
+    for (int i = start; i < end; i++)
+    {
+        if (i > start)
+            strcat(joined, " ");
+        strcat(joined, argv[i]);
+    }
+
+    char *device = normalize_device_name(joined);
+    free(joined);
+    if (device)
+        *index = end - 1;
+    return device;
+}
+
 void print_help(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
@@ -297,6 +391,8 @@ void print_help(const char *prog)
     printf("  -l, --list            List input devices with EV_ABS support\n");
     printf(
         "  -d, --device <arg>    Specify device by path or name substring\n");
+    printf("                         Examples: %s -d \"Device Name With Spaces\"\n", prog);
+    printf("                                   %s -d Device\\ Name\\ With\\ Spaces\n", prog);
 }
 
 void list_devices()
@@ -405,7 +501,7 @@ int main(int argc, char *argv[])
     bool grabbed = false;
     bool tosu_started = false;
 
-    const char *dev_override = NULL;
+    char *dev_override = NULL;
     bool list_requested = false;
 
     for (int i = 1; i < argc; i++)
@@ -424,10 +520,10 @@ int main(int argc, char *argv[])
         {
             list_requested = true;
         }
-        else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "--device")) &&
-                 i + 1 < argc)
+        else if (!strcmp(argv[i], "-d") || !strcmp(argv[i], "--device"))
         {
-            dev_override = argv[++i];
+            free(dev_override);
+            dev_override = parse_device_arg(argc, argv, &i);
         }
     }
 
@@ -859,6 +955,7 @@ cleanup:
         close(fd);
         fd = -1;
     }
+    free(dev_override);
     fprintf(stderr, "Exiting with status %d\n", exit_code);
     return exit_code;
 }
