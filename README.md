@@ -45,7 +45,13 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 #### Input options
 
-`enable_tosu`: Enable [Tosu](https://github.com/tosuapp/tosu)/[gosumemory](https://github.com/l3lackShark/gosumemory) integration, for automatically toggling absolute mode depending on gameplay state
+`enable_tosu`: Enable [Tosu](https://github.com/tosuapp/tosu)/[gosumemory](https://github.com/l3lackShark/gosumemory) integration, for automatically toggling Absolute Mode depending on gameplay state
+
+`enable_hotkey`: Enable support for using a keyboard hotkey to temporarily disable Absolute Mode while the key is held. The hotkey is checked across all connected keyboards. Disabled by default.
+
+`hotkey_key`: The key to be monitored by the hotkey check. Accepts Linux KEY_* key names, such as KEY_LEFTALT. Left Alt (KEY_LEFTALT) is used by default.
+
+When both Tosu integration and the hotkey are enabled, they work together: Tosu controls the normal Absolute Mode state, while holding the hotkey temporarily disables Absolute Mode regardless of the Tosu state.
 
 ## Launch options
 
@@ -64,11 +70,11 @@ These values are relative to the center of the touchpad/screen and are measured 
 
 ## Usage
 
-If playing on osu!Lazer, make sure to **enable** high Precision Mouse, (and **disable** Fullscreen/Confine mouse cursor to window, if on Wayland)
+If playing on osu!Lazer, make sure to **enable** High Precision Mouse, (and **disable** Fullscreen/Confine mouse cursor to window, if on Wayland)
 
 Either run abs-c as root, or add your user to the input group (reboot afterwards):
 
-`sudo usermod –a –G input $(whoami)`
+`sudo usermod -a -G input $(whoami)`
 
 Run with:
 ```
