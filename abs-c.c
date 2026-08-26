@@ -289,17 +289,6 @@ int init_uinput(int tmin_x, int tmax_x, int tmin_y, int tmax_y)
         close(fd);
         return -1;
     }
-    struct input_event ev = {0};
-
-    ev.type = EV_KEY;
-    ev.code = BTN_TOOL_PEN;
-    ev.value = 1;
-    write(fd, &ev, sizeof(ev));
-
-    ev.type = EV_SYN;
-    ev.code = SYN_REPORT;
-    ev.value = 0;
-    write(fd, &ev, sizeof(ev));
 
     return fd;
 }
@@ -1470,6 +1459,10 @@ int main(int argc, char *argv[])
     static int last_emitted_y = -1;
     bool active = true;
     bool tosu_active = true;
+    bool resync_pending = true;
+    bool resync_x_valid = false;
+    bool resync_y_valid = false;
+    bool previous_active = true;
     static bool pen_down = false;
 
     if (config.enable_tosu)
@@ -1486,6 +1479,20 @@ int main(int argc, char *argv[])
 
     while (!stop)
     {
+        /* HARD RESET WHEN INACTIVE:
+           kills ghost state + prevents late emissions */
+        if (!active)
+        {
+            pen_down = false;
+            x_updated = false;
+            y_updated = false;
+
+            resync_pending = true;
+            resync_x_valid = false;
+            resync_y_valid = false;
+        }
+
+        previous_active = active;
 
         struct timespec ts_now;
         clock_gettime(CLOCK_MONOTONIC, &ts_now);
@@ -1628,22 +1635,40 @@ int main(int argc, char *argv[])
             if (any_keyboard_hotkey_down(keyboards, keyboard_count))
                 active = false;
         }
+        /*
+         * Detect Absolute Mode transitioning from inactive to active.
+         * The first fresh X and Y values must both be received before
+         * emitting anything, otherwise the cursor can jump one axis
+         * at a time using a stale value for the other axis.
+         */
+        if (active && !previous_active)
+        {
+            resync_pending = true;
+            resync_x_valid = false;
+            resync_y_valid = false;
+        }
 
         /*
-         * Grab/ungrab only the selected absolute input device.
-         * Keyboard devices are intentionally never passed to set_grab().
-         */
+        * Grab/ungrab only the selected absolute input device.
+        * Keyboard devices are intentionally never passed to set_grab().
+        */
         set_grab(fd, &grabbed, active);
+
         ssize_t rd = read(fd, ev_buf, sizeof(ev_buf));
         if (rd < 0)
         {
             if (errno == EINTR && stop)
                 break;
-            perror("read input_event");
+
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                perror("read input_event");
+
             continue;
         }
 
         int nevents = rd / sizeof(struct input_event);
+
+
 
         for (int i = 0; i < nevents; i++)
         {
@@ -1712,32 +1737,65 @@ int main(int argc, char *argv[])
 
             else if (ev->type == EV_ABS)
             {
-                switch (ev->code)
+                /*
+                 * Record incoming coordinates.
+                 *
+                 * These flags are also used by the inactive -> active
+                 * resynchronization logic to make sure both axes have
+                 * produced a fresh value before anything is emitted.
+                 */
+                if (ev->code == ABS_X)
                 {
-                case ABS_X:
                     x = ev->value;
                     x_updated = true;
-                    break;
 
-                case ABS_Y:
+                    if (resync_pending)
+                        resync_x_valid = true;
+                }
+                else if (ev->code == ABS_Y)
+                {
                     y = ev->value;
                     y_updated = true;
-                    break;
 
-                default:
-                    break;
+                    if (resync_pending)
+                        resync_y_valid = true;
                 }
             }
 
             else if (ev->type == EV_SYN && ev->code == SYN_REPORT)
             {
-
                 if (!pen_down)
                     continue;
 
+                /*
+                 * After Absolute Mode becomes active, wait until both
+                 * axes have supplied fresh values before emitting.
+                 * This prevents one axis from being emitted alongside
+                 * the stale value from the previous active period.
+                 */
+                if (resync_pending)
+                {
+                    if (resync_x_valid && resync_y_valid)
+                    {
+                        if (x != last_emitted_x || y != last_emitted_y)
+                        {
+                            emit_abs_delta(x, y, true, true);
+                            last_emitted_x = x;
+                            last_emitted_y = y;
+                        }
+
+                        resync_pending = false;
+                        resync_x_valid = false;
+                        resync_y_valid = false;
+                    }
+
+                    x_updated = false;
+                    y_updated = false;
+                    continue;
+                }
+
                 if (x_updated || y_updated)
                 {
-
                     if (x != last_emitted_x || y != last_emitted_y)
                     {
                         emit_abs_delta(x, y, true, true);
@@ -1758,6 +1816,10 @@ int main(int argc, char *argv[])
             pen_down = false;
             x_updated = false;
             y_updated = false;
+
+            resync_pending = true;
+            resync_x_valid = false;
+            resync_y_valid = false;
         }
     }
     exit_code = EXIT_SUCCESS;
