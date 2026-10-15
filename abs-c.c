@@ -1559,7 +1559,7 @@ int main(int argc, char *argv[])
             }
         }
 
-        int poll_ret = poll(pfd, poll_count, INACTIVE_SLEEP_MS);
+        int poll_ret = poll(pfd, poll_count, active ? 16 : INACTIVE_SLEEP_MS);
         if (poll_ret < 0)
         {
             if (errno == EINTR)
@@ -1570,9 +1570,17 @@ int main(int argc, char *argv[])
             perror("poll");
             break;
         }
-        /* A timeout still loops through Tosu and grab-state evaluation. */
+        /* Preserve the low-CPU inactive cadence; active Tosu polling stays responsive. */
         if (poll_ret == 0)
+        {
+            if (!active)
+            {
+                struct timespec ts = {.tv_sec = 0,
+                                      .tv_nsec = INACTIVE_SLEEP_MS * 1000000L};
+                nanosleep(&ts, NULL);
+            }
             continue;
+        }
 
         if (pfd[0].revents & (POLLERR | POLLHUP | POLLNVAL))
         {
