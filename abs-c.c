@@ -382,7 +382,7 @@ static void scan_keyboard_devices(keyboard_device *keyboards,
             continue;
         }
 
-        int devfd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        int devfd = open(path, O_RDONLY);
         if (devfd < 0)
         {
             free(namelist[i]);
@@ -1313,7 +1313,7 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        int devfd = open(path, O_RDONLY);
+        int devfd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (devfd < 0)
             continue;
 
