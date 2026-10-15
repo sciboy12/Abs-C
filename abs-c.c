@@ -1501,7 +1501,7 @@ int main(int argc, char *argv[])
 
         if (active != previous_active)
         {
-            verbose_fprintf(stderr, "[state] active %d -> %d (Tosu=%d)\\n",
+            verbose_fprintf(stderr, "[state] active %d -> %d (Tosu=%d)\n",
                             previous_active, active, tosu_active);
             if (active)
             {
@@ -1509,7 +1509,7 @@ int main(int argc, char *argv[])
                 resync_x_valid = false;
                 resync_y_valid = false;
                 x_updated = y_updated = false;
-                verbose_fprintf(stderr, "[resync] waiting for fresh ABS_X and ABS_Y\\n");
+                verbose_fprintf(stderr, "[resync] waiting for fresh ABS_X and ABS_Y\n");
             }
             else
             {
@@ -1671,7 +1671,7 @@ int main(int argc, char *argv[])
                     resync_pending = true;
                     resync_x_valid = resync_y_valid = false;
                     x_updated = y_updated = false;
-                    verbose_fprintf(stderr, "[resync] waiting for fresh ABS_X and ABS_Y\\n");
+                    verbose_fprintf(stderr, "[resync] waiting for fresh ABS_X and ABS_Y\n");
                 }
                 else
                 {
@@ -1718,7 +1718,7 @@ int main(int argc, char *argv[])
                 break;
             if (rd % sizeof(struct input_event) != 0)
             {
-                fprintf(stderr, "partial input_event read\\n");
+                fprintf(stderr, "partial input_event read\n");
                 stop = 1;
                 break;
             }
@@ -1730,7 +1730,7 @@ int main(int argc, char *argv[])
                 if (ev->type == EV_KEY && ev->code == BTN_TOUCH)
                 {
                     physical_touch_down = ev->value != 0;
-                    verbose_fprintf(stderr, "[input] BTN_TOUCH=%d\\n", physical_touch_down);
+                    verbose_fprintf(stderr, "[input] BTN_TOUCH=%d\n", physical_touch_down);
                     if (!active)
                         continue;
                     /* Defer pen-down until a fresh post-activation coordinate pair exists. */
@@ -1761,7 +1761,7 @@ int main(int argc, char *argv[])
                         y_updated = true;
                         if (resync_pending) resync_y_valid = true;
                     }
-                    verbose_fprintf(stderr, "[input] %s=%d\\n",
+                    verbose_fprintf(stderr, "[input] %s=%d\n",
                                     ev->code == ABS_X ? "ABS_X" : "ABS_Y", ev->value);
                 }
                 else if (ev->type == EV_SYN && ev->code == SYN_REPORT)
@@ -1776,7 +1776,7 @@ int main(int argc, char *argv[])
                     {
                         if (!(resync_x_valid && resync_y_valid))
                         {
-                            verbose_fprintf(stderr, "[resync] deferred: X valid=%d Y valid=%d\\n",
+                            verbose_fprintf(stderr, "[resync] deferred: X valid=%d Y valid=%d\n",
                                             resync_x_valid, resync_y_valid);
                             x_updated = y_updated = false;
                             continue;
@@ -1794,7 +1794,7 @@ int main(int argc, char *argv[])
                         resync_pending = false;
                         resync_x_valid = resync_y_valid = false;
                         x_updated = y_updated = false;
-                        verbose_fprintf(stderr, "[resync] fresh coordinate pair accepted\\n");
+                        verbose_fprintf(stderr, "[resync] fresh coordinate pair accepted\n");
                     }
                     else if (pen_down && (x_updated || y_updated))
                     {
@@ -1824,7 +1824,7 @@ int main(int argc, char *argv[])
                         else
                         {
                             pen_down = true;
-                            verbose_fprintf(stderr, "[output] coordinates synchronized; pen-down emitted\\n");
+                            verbose_fprintf(stderr, "[output] coordinates synchronized; pen-down emitted\n");
                         }
                     }
                 }
