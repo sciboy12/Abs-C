@@ -1581,6 +1581,7 @@ int main(int argc, char *argv[])
         }
 
         bool keyboard_rescan = false;
+        bool active_before_keyboard = active;
 
         if (config.enable_hotkey)
         {
@@ -1661,10 +1662,10 @@ int main(int argc, char *argv[])
             if (any_keyboard_hotkey_down(keyboards, keyboard_count))
                 active = false;
 
-            if (active != previous_active)
+            if (active != active_before_keyboard)
             {
-                verbose_fprintf(stderr, "[state] active %d -> %d after keyboard update\\n",
-                                previous_active, active);
+                verbose_fprintf(stderr, "[state] active %d -> %d after keyboard update\n",
+                                active_before_keyboard, active);
                 if (active)
                 {
                     resync_pending = true;
