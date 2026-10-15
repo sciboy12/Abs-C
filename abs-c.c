@@ -1105,7 +1105,7 @@ void list_devices()
             continue;
         } // Only character devices
 
-        int devfd = open(path, O_RDONLY);
+        int devfd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (devfd < 0)
         {
             free(namelist[i]);
@@ -1463,7 +1463,8 @@ int main(int argc, char *argv[])
     bool resync_x_valid = false;
     bool resync_y_valid = false;
     bool previous_active = true;
-    static bool pen_down = false;
+    bool pen_down = false; /* State actually emitted by the virtual tablet. */
+    bool physical_touch_down = false; /* Latest physical BTN_TOUCH state. */
 
     if (config.enable_tosu)
     {
@@ -1479,19 +1480,6 @@ int main(int argc, char *argv[])
 
     while (!stop)
     {
-        /* HARD RESET WHEN INACTIVE:
-           kills ghost state + prevents late emissions */
-        if (!active)
-        {
-            pen_down = false;
-            x_updated = false;
-            y_updated = false;
-
-            resync_pending = true;
-            resync_x_valid = false;
-            resync_y_valid = false;
-        }
-
         previous_active = active;
 
         struct timespec ts_now;
@@ -1506,9 +1494,45 @@ int main(int argc, char *argv[])
             ts_last = ts_now;
         }
 
-        /* Tosu provides the base state. The hotkey override is applied
-         * after keyboard events for this poll cycle have been processed. */
+        /* Tosu provides the base state; the hotkey override follows keyboard events. */
         active = tosu_active;
+        if (config.enable_hotkey && any_keyboard_hotkey_down(keyboards, keyboard_count))
+            active = false;
+
+        if (active != previous_active)
+        {
+            verbose_fprintf(stderr, "[state] active %d -> %d (Tosu=%d)\\n",
+                            previous_active, active, tosu_active);
+            if (active)
+            {
+                resync_pending = true;
+                resync_x_valid = false;
+                resync_y_valid = false;
+                x_updated = y_updated = false;
+                verbose_fprintf(stderr, "[resync] waiting for fresh ABS_X and ABS_Y\\n");
+            }
+            else
+            {
+                /* Release only states that were actually sent to uinput. */
+                if (pen_down)
+                {
+                    struct input_event release[] = {
+                        {.type = EV_KEY, .code = BTN_TOUCH, .value = 0},
+                        {.type = EV_KEY, .code = BTN_TOOL_PEN, .value = 0},
+                        {.type = EV_SYN, .code = SYN_REPORT, .value = 0}};
+                    if (write(tab_fd, release, sizeof(release)) != sizeof(release))
+                        perror("write tablet release");
+                    pen_down = false;
+                }
+                physical_touch_down = false;
+                resync_pending = true;
+                resync_x_valid = resync_y_valid = false;
+                x_updated = y_updated = false;
+            }
+        }
+
+        /* Apply Tosu transitions before sleeping for input. */
+        set_grab(fd, &grabbed, active);
 
         int poll_count = 0;
         int inotify_index = -1;
@@ -1536,16 +1560,19 @@ int main(int argc, char *argv[])
         }
 
         int poll_ret = poll(pfd, poll_count, INACTIVE_SLEEP_MS);
-        if (poll_ret <= 0)
+        if (poll_ret < 0)
         {
-            if (!active)
+            if (errno == EINTR)
             {
-                struct timespec ts = {.tv_sec = 0,
-                                      .tv_nsec = INACTIVE_SLEEP_MS * 1000000L};
-                nanosleep(&ts, NULL);
+                if (stop) break;
+                continue;
             }
-            continue;
+            perror("poll");
+            break;
         }
+        /* A timeout still loops through Tosu and grab-state evaluation. */
+        if (poll_ret == 0)
+            continue;
 
         if (pfd[0].revents & (POLLERR | POLLHUP | POLLNVAL))
         {
@@ -1631,195 +1658,178 @@ int main(int argc, char *argv[])
             }
 
             active = tosu_active;
-
             if (any_keyboard_hotkey_down(keyboards, keyboard_count))
                 active = false;
-        }
-        /*
-         * Detect Absolute Mode transitioning from inactive to active.
-         * The first fresh X and Y values must both be received before
-         * emitting anything, otherwise the cursor can jump one axis
-         * at a time using a stale value for the other axis.
-         */
-        if (active && !previous_active)
-        {
-            resync_pending = true;
-            resync_x_valid = false;
-            resync_y_valid = false;
-        }
 
-        /*
-        * Grab/ungrab only the selected absolute input device.
-        * Keyboard devices are intentionally never passed to set_grab().
-        */
-        set_grab(fd, &grabbed, active);
-
-        ssize_t rd = read(fd, ev_buf, sizeof(ev_buf));
-        if (rd < 0)
-        {
-            if (errno == EINTR && stop)
-                break;
-
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-                perror("read input_event");
-
-            continue;
-        }
-
-        int nevents = rd / sizeof(struct input_event);
-
-
-
-        for (int i = 0; i < nevents; i++)
-        {
-
-            struct input_event *ev = &ev_buf[i];
-
-            /* HARD DISABLE GATE:
-               If inactive, we still consume events but DO NOT update state */
-            if (!active)
+            if (active != previous_active)
             {
-                continue;
+                verbose_fprintf(stderr, "[state] active %d -> %d after keyboard update\\n",
+                                previous_active, active);
+                if (active)
+                {
+                    resync_pending = true;
+                    resync_x_valid = resync_y_valid = false;
+                    x_updated = y_updated = false;
+                    verbose_fprintf(stderr, "[resync] waiting for fresh ABS_X and ABS_Y\\n");
+                }
+                else
+                {
+                    if (pen_down)
+                    {
+                        struct input_event release[] = {
+                            {.type = EV_KEY, .code = BTN_TOUCH, .value = 0},
+                            {.type = EV_KEY, .code = BTN_TOOL_PEN, .value = 0},
+                            {.type = EV_SYN, .code = SYN_REPORT, .value = 0}};
+                        if (write(tab_fd, release, sizeof(release)) != sizeof(release))
+                            perror("write tablet release");
+                        pen_down = false;
+                    }
+                    physical_touch_down = false;
+                    resync_pending = true;
+                    resync_x_valid = resync_y_valid = false;
+                    x_updated = y_updated = false;
+                }
+                set_grab(fd, &grabbed, active);
+            }
+        }
+
+        /* Never read the physical device unless poll marked it readable. */
+        if (!(pfd[0].revents & POLLIN))
+            continue;
+
+        for (;;)
+        {
+            ssize_t rd = read(fd, ev_buf, sizeof(ev_buf));
+            if (rd < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    break;
+                if (errno == EINTR)
+                {
+                    if (stop) break;
+                    continue;
+                }
+                perror("read input_event");
+                stop = 1;
+                break;
+            }
+            if (rd == 0)
+                break;
+            if (rd % sizeof(struct input_event) != 0)
+            {
+                fprintf(stderr, "partial input_event read\\n");
+                stop = 1;
+                break;
             }
 
-            if (ev->type == EV_KEY)
+            int nevents = rd / sizeof(struct input_event);
+            for (int i = 0; i < nevents; i++)
             {
-
-                if (ev->code == BTN_TOUCH)
+                struct input_event *ev = &ev_buf[i];
+                if (ev->type == EV_KEY && ev->code == BTN_TOUCH)
                 {
-                    if (ev->value && !pen_down)
+                    physical_touch_down = ev->value != 0;
+                    verbose_fprintf(stderr, "[input] BTN_TOUCH=%d\\n", physical_touch_down);
+                    if (!active)
+                        continue;
+                    /* Defer pen-down until a fresh post-activation coordinate pair exists. */
+                    if (!physical_touch_down && pen_down)
                     {
-
-                        struct input_event out = {0};
-
-                        out.type = EV_KEY;
-                        out.code = BTN_TOOL_PEN;
-                        out.value = 1;
-                        write(tab_fd, &out, sizeof(out));
-
-                        out.type = EV_KEY;
-                        out.code = BTN_TOUCH;
-                        out.value = 1;
-                        write(tab_fd, &out, sizeof(out));
-
-                        out.type = EV_SYN;
-                        out.code = SYN_REPORT;
-                        out.value = 0;
-                        write(tab_fd, &out, sizeof(out));
-
-                        pen_down = true;
-                    }
-
-                    else if (!ev->value && pen_down)
-                    {
-
-                        struct input_event out = {0};
-
-                        out.type = EV_KEY;
-                        out.code = BTN_TOUCH;
-                        out.value = 0;
-                        write(tab_fd, &out, sizeof(out));
-
-                        out.type = EV_KEY;
-                        out.code = BTN_TOOL_PEN;
-                        out.value = 0;
-                        write(tab_fd, &out, sizeof(out));
-
-                        out.type = EV_SYN;
-                        out.code = SYN_REPORT;
-                        out.value = 0;
-                        write(tab_fd, &out, sizeof(out));
-
+                        struct input_event release[] = {
+                            {.type = EV_KEY, .code = BTN_TOUCH, .value = 0},
+                            {.type = EV_KEY, .code = BTN_TOOL_PEN, .value = 0},
+                            {.type = EV_SYN, .code = SYN_REPORT, .value = 0}};
+                        if (write(tab_fd, release, sizeof(release)) != sizeof(release))
+                            perror("write tablet release");
                         pen_down = false;
                     }
                 }
-            }
-
-            else if (ev->type == EV_ABS)
-            {
-                /*
-                 * Record incoming coordinates.
-                 *
-                 * These flags are also used by the inactive -> active
-                 * resynchronization logic to make sure both axes have
-                 * produced a fresh value before anything is emitted.
-                 */
-                if (ev->code == ABS_X)
+                else if (ev->type == EV_ABS && (ev->code == ABS_X || ev->code == ABS_Y))
                 {
-                    x = ev->value;
-                    x_updated = true;
+                    if (!active)
+                        continue;
+                    if (ev->code == ABS_X)
+                    {
+                        x = ev->value;
+                        x_updated = true;
+                        if (resync_pending) resync_x_valid = true;
+                    }
+                    else
+                    {
+                        y = ev->value;
+                        y_updated = true;
+                        if (resync_pending) resync_y_valid = true;
+                    }
+                    verbose_fprintf(stderr, "[input] %s=%d\\n",
+                                    ev->code == ABS_X ? "ABS_X" : "ABS_Y", ev->value);
+                }
+                else if (ev->type == EV_SYN && ev->code == SYN_REPORT)
+                {
+                    if (!active)
+                    {
+                        x_updated = y_updated = false;
+                        continue;
+                    }
 
                     if (resync_pending)
-                        resync_x_valid = true;
-                }
-                else if (ev->code == ABS_Y)
-                {
-                    y = ev->value;
-                    y_updated = true;
+                    {
+                        if (!(resync_x_valid && resync_y_valid))
+                        {
+                            verbose_fprintf(stderr, "[resync] deferred: X valid=%d Y valid=%d\\n",
+                                            resync_x_valid, resync_y_valid);
+                            x_updated = y_updated = false;
+                            continue;
+                        }
 
-                    if (resync_pending)
-                        resync_y_valid = true;
-                }
-            }
-
-            else if (ev->type == EV_SYN && ev->code == SYN_REPORT)
-            {
-                if (!pen_down)
-                    continue;
-
-                /*
-                 * After Absolute Mode becomes active, wait until both
-                 * axes have supplied fresh values before emitting.
-                 * This prevents one axis from being emitted alongside
-                 * the stale value from the previous active period.
-                 */
-                if (resync_pending)
-                {
-                    if (resync_x_valid && resync_y_valid)
+                        /* Send the valid coordinate pair before any pen-down. */
+                        if (x != last_emitted_x || y != last_emitted_y)
+                        {
+                            if (emit_abs_delta(x, y, true, true))
+                            {
+                                last_emitted_x = x;
+                                last_emitted_y = y;
+                            }
+                        }
+                        resync_pending = false;
+                        resync_x_valid = resync_y_valid = false;
+                        x_updated = y_updated = false;
+                        verbose_fprintf(stderr, "[resync] fresh coordinate pair accepted\\n");
+                    }
+                    else if (pen_down && (x_updated || y_updated))
                     {
                         if (x != last_emitted_x || y != last_emitted_y)
                         {
-                            emit_abs_delta(x, y, true, true);
-                            last_emitted_x = x;
-                            last_emitted_y = y;
+                            if (emit_abs_delta(x, y, true, true))
+                            {
+                                last_emitted_x = x;
+                                last_emitted_y = y;
+                            }
                         }
-
-                        resync_pending = false;
-                        resync_x_valid = false;
-                        resync_y_valid = false;
+                        x_updated = y_updated = false;
                     }
-
-                    x_updated = false;
-                    y_updated = false;
-                    continue;
-                }
-
-                if (x_updated || y_updated)
-                {
-                    if (x != last_emitted_x || y != last_emitted_y)
+                    else
                     {
-                        emit_abs_delta(x, y, true, true);
-                        last_emitted_x = x;
-                        last_emitted_y = y;
+                        x_updated = y_updated = false;
                     }
 
-                    x_updated = false;
-                    y_updated = false;
+                    if (!resync_pending && active && physical_touch_down && !pen_down)
+                    {
+                        struct input_event press[] = {
+                            {.type = EV_KEY, .code = BTN_TOOL_PEN, .value = 1},
+                            {.type = EV_KEY, .code = BTN_TOUCH, .value = 1},
+                            {.type = EV_SYN, .code = SYN_REPORT, .value = 0}};
+                        if (write(tab_fd, press, sizeof(press)) != sizeof(press))
+                            perror("write tablet press");
+                        else
+                        {
+                            pen_down = true;
+                            verbose_fprintf(stderr, "[output] coordinates synchronized; pen-down emitted\\n");
+                        }
+                    }
                 }
             }
-        }
-
-        /* HARD RESET WHEN INACTIVE:
-           kills ghost state + prevents late emissions */
-        if (!active)
-        {
-            pen_down = false;
-            x_updated = false;
-            y_updated = false;
-
-            resync_pending = true;
-            resync_x_valid = false;
-            resync_y_valid = false;
+            if (rd < (ssize_t)sizeof(ev_buf))
+                break;
         }
     }
     exit_code = EXIT_SUCCESS;
@@ -1843,6 +1853,15 @@ cleanup:
         keyboard_inotify_fd = -1;
     }
 
+    if (pen_down && tab_fd >= 0)
+    {
+        struct input_event release[] = {
+            {.type = EV_KEY, .code = BTN_TOUCH, .value = 0},
+            {.type = EV_KEY, .code = BTN_TOOL_PEN, .value = 0},
+            {.type = EV_SYN, .code = SYN_REPORT, .value = 0}};
+        if (write(tab_fd, release, sizeof(release)) != sizeof(release))
+            verbose_perror("write tablet release during cleanup");
+    }
     if (grabbed && fd >= 0 && ioctl(fd, EVIOCGRAB, 0) < 0)
     {
         verbose_perror("ioctl EVIOCGRAB release");
