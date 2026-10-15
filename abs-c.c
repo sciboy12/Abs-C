@@ -1105,7 +1105,7 @@ void list_devices()
             continue;
         } // Only character devices
 
-        int devfd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        int devfd = open(path, O_RDONLY);
         if (devfd < 0)
         {
             free(namelist[i]);
